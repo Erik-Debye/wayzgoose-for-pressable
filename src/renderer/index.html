@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:;">
+  <title>Wayzgoose for Pressable</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Wayzgoose <span class="brand-sub">for Pressable</span></div>
+    <div class="conn" id="conn" aria-live="polite">Not connected</div>
+    <button class="btn btn-quiet" id="btn-settings" type="button">Settings</button>
+  </header>
+
+  <main class="app">
+    <aside class="sites">
+      <div class="sites-head">
+        <h2>Sites</h2>
+        <span class="count" id="list-count">0 on your list</span>
+      </div>
+      <input class="input" id="site-search" type="search" placeholder="Filter by name, URL or tag" autocomplete="off">
+      <div class="sites-tools">
+        <button class="btn btn-small" id="btn-add-shown" type="button">Add all shown</button>
+        <button class="btn btn-small" id="btn-clear-list" type="button">Clear list</button>
+        <button class="btn btn-small" id="btn-refresh" type="button" title="Reload sites from Pressable">Refresh</button>
+      </div>
+      <ul class="site-list" id="site-list" aria-label="Sites on your account"></ul>
+      <p class="sites-empty" id="sites-empty" hidden></p>
+    </aside>
+
+    <section class="work">
+      <div class="task-bar">
+        <div class="segmented" role="radiogroup" aria-label="Task">
+          <button type="button" class="seg" data-task="backup" role="radio" aria-checked="true">Back up</button>
+          <button type="button" class="seg" data-task="cache" role="radio" aria-checked="false">Clear cache</button>
+          <button type="button" class="seg" data-task="preload" role="radio" aria-checked="false">Cache preload</button>
+          <button type="button" class="seg" data-task="security" role="radio" aria-checked="false">Security</button>
+        </div>
+
+        <div class="task-options" id="opts-backup">
+          <label><input type="checkbox" id="type-fs" checked> Filesystem</label>
+          <label><input type="checkbox" id="type-db" checked> Database</label>
+          <p class="note">Pressable keeps 3 of each type per site, so the oldest one is replaced when a site is full.</p>
+        </div>
+
+        <div class="task-options" id="opts-cache" hidden>
+          <label><input type="checkbox" id="cache-edge" checked> Edge cache</label>
+          <label><input type="checkbox" id="cache-object"> Object cache</label>
+          <p class="note">Edge cache is the page cache served from Pressable’s edge network. Object cache is the Memcached layer behind WordPress; flushing it can slow a busy site briefly while it refills.</p>
+        </div>
+
+        <div class="task-options" id="opts-security" hidden>
+          <label><input type="radio" name="security-scope" id="security-all" value="all" checked> All sites on the account</label>
+          <label><input type="radio" name="security-scope" id="security-list" value="list"> Only my list</label>
+          <label class="opt-secondary"><input type="checkbox" id="security-notify"> Send new findings to Slack/Discord <span id="security-notify-hint"></span></label>
+          <p class="note">Checks every plugin and theme against WPScan’s vulnerability data (the same data behind MyPressable’s Security Alerts), then looks each CVE up for its severity and the access an attacker needs. Pressable refreshes this data daily, so once a day is plenty.</p>
+        </div>
+
+        <div class="task-options" id="opts-preload" hidden>
+          <label><input type="radio" name="preload" id="preload-on" value="on" checked> Turn on</label>
+          <label><input type="radio" name="preload" id="preload-off" value="off"> Turn off</label>
+          <label class="opt-secondary"><input type="checkbox" id="preload-edge"> Turn on edge cache first if a site has it off</label>
+          <p class="note">Cache preload crawls a site to warm its pages after each cache clear. It needs a live site with edge cache on, and turning edge cache off also turns preload off.</p>
+        </div>
+      </div>
+
+      <div class="actions">
+        <div class="action action-primary">
+          <h3 id="list-title">Back up your list</h3>
+          <p id="list-summary">Tick sites on the left to build your list.</p>
+          <button class="btn btn-accent" id="run-list" type="button" disabled>Back up list</button>
+        </div>
+        <div class="action">
+          <h3>One site</h3>
+          <div class="picker">
+            <input class="input" id="single-filter" type="search" placeholder="Find a site" autocomplete="off">
+            <select class="input" id="single-site" aria-label="Site to act on"></select>
+          </div>
+          <dl class="site-status" id="site-status" aria-live="polite"></dl>
+          <button class="btn" id="run-single" type="button" disabled>Back up this site</button>
+        </div>
+      </div>
+
+      <div class="progress" id="progress" hidden>
+        <div class="progress-text" id="progress-text"></div>
+        <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+      </div>
+
+      <section class="findings" id="findings" hidden>
+        <div class="findings-head">
+          <div>
+            <h3 id="findings-title">Findings</h3>
+            <p class="findings-meta" id="findings-meta"></p>
+          </div>
+          <div class="log-tools">
+            <button class="btn btn-small" id="btn-send-new" type="button">Send new to channel</button>
+            <button class="btn btn-small" id="btn-send-all" type="button">Send all</button>
+            <button class="btn btn-small btn-quiet" id="btn-hide-findings" type="button">Hide</button>
+          </div>
+        </div>
+        <p class="findings-note" id="findings-note" hidden></p>
+        <div class="findings-list" id="findings-list"></div>
+      </section>
+
+      <div class="log">
+        <div class="log-head">
+          <h3>Activity</h3>
+          <div class="log-tools">
+            <button class="btn btn-small" id="btn-cancel" type="button" hidden>Cancel run</button>
+            <button class="btn btn-small" id="btn-clear-log" type="button">Clear</button>
+          </div>
+        </div>
+        <p class="log-empty" id="log-empty">Nothing has run yet. Tasks you start will show up here with their status.</p>
+        <div class="log-scroll">
+          <table class="log-table" id="log-table" hidden>
+            <colgroup>
+              <col class="c-site"><col class="c-type"><col class="c-status"><col>
+            </colgroup>
+            <thead>
+              <tr><th>Site</th><th>Task</th><th>Status</th><th>Details</th></tr>
+            </thead>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <dialog class="settings" id="settings">
+    <form method="dialog" id="settings-form">
+      <h2>Connect to Pressable</h2>
+      <p class="help">
+        Create an API application in MyPressable under <strong>User Settings → API Applications</strong>
+        and give it <strong>Sites: Read</strong> and <strong>Sites: Edit</strong>. Paste its client ID and secret here.
+        <a href="#" id="link-apps">Open API Applications</a>
+      </p>
+      <label class="field">
+        <span>Client ID</span>
+        <input class="input" id="client-id" type="text" autocomplete="off" spellcheck="false" autofocus>
+      </label>
+      <label class="field">
+        <span>Client secret</span>
+        <input class="input" id="client-secret" type="password" autocomplete="off" spellcheck="false">
+      </label>
+      <p class="status" id="settings-status" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" id="btn-forget" type="button">Forget credentials</button>
+        <span class="spacer"></span>
+        <button class="btn btn-accent" id="btn-save-creds" type="button">Save and test</button>
+      </div>
+
+      <h2 class="settings-sub">Vulnerability alerts</h2>
+      <p class="help">Paste an incoming webhook URL from Slack or Discord. New findings are posted there after each check, with the CVE, severity, the access an attacker needs, and every site affected.</p>
+      <label class="field">
+        <span>Webhook URL</span>
+        <input class="input" id="webhook-url" type="url" placeholder="https://hooks.slack.com/services/… or https://discord.com/api/webhooks/…" autocomplete="off" spellcheck="false">
+      </label>
+      <label class="check"><input type="checkbox" id="daily-check"> Check for vulnerabilities once a day while the app is open</label>
+      <label class="field">
+        <span>NVD API key (optional, speeds up CVE lookups when cve.org has no score)</span>
+        <input class="input" id="nvd-key" type="password" autocomplete="off" spellcheck="false">
+      </label>
+      <p class="status" id="alerts-status" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" id="btn-test-webhook" type="button">Send test message</button>
+        <span class="spacer"></span>
+        <button class="btn" id="btn-save-alerts" type="button">Save alert settings</button>
+      </div>
+
+      <div class="dialog-actions dialog-footer">
+        <button class="btn btn-quiet" id="btn-data-folder" type="button">Open data folder</button>
+        <span class="spacer"></span>
+        <button class="btn" id="btn-close-settings" type="button">Close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

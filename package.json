@@ -1,0 +1,81 @@
+{
+  "name": "wayzgoose-for-pressable",
+  "productName": "Wayzgoose for Pressable",
+  "version": "0.1.0",
+  "description": "Wayzgoose for Pressable: backups, cache control and vulnerability alerts for your Pressable sites, one site at a time or across a saved list.",
+  "main": "src/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test \"test/*.test.js\"",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "44.9.3",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "com.yourcompany.wayzgoose-for-pressable",
+    "productName": "Wayzgoose for Pressable",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "notarize": true,
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "artifactName": "Wayzgoose-for-Pressable-${version}-${arch}.${ext}"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Wayzgoose-for-Pressable-${version}-Setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "publish": {
+      "provider": "github",
+      "releaseType": "release"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YOUR_GITHUB_USER/wayzgoose-for-pressable.git"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.11"
+  },
+  "license": "MIT",
+  "author": "YOUR NAME"
+}

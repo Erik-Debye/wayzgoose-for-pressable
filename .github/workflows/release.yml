@@ -1,0 +1,64 @@
+# Builds installers for macOS and Windows and attaches them to a GitHub
+# Release whenever a version tag (v1.2.3) is pushed. Nothing runs on your
+# own machine: push the tag, wait a few minutes, download from Releases.
+#
+#   npm version patch        # bumps package.json and creates the tag
+#   git push --follow-tags   # triggers this workflow
+#
+# Signing is optional. Without certificates the installers still build and
+# run, but macOS and Windows show their "unidentified developer" prompts.
+# To sign, add the secrets listed below in Settings → Secrets → Actions.
+
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: --mac
+          - os: windows-latest
+            args: --win
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build and publish installers
+        run: npx electron-builder ${{ matrix.args }} --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # --- macOS signing + notarization (optional) ---
+          # CSC_LINK: base64 of your Developer ID Application .p12
+          # CSC_KEY_PASSWORD: its password
+          # APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID: for notarization
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # --- Windows signing (optional) ---
+          # WIN_CSC_LINK: base64 of your code-signing .pfx
+          # WIN_CSC_KEY_PASSWORD: its password
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          # Build unsigned when no certificate is configured instead of failing.
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_LINK != '' }}
