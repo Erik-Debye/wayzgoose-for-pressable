@@ -1,6 +1,7 @@
 # Wayzgoose for Pressable
 
 *Backups, cache control and vulnerability alerts for your Pressable sites.*
+*Backups, Cache-Steuerung und Sicherheitswarnungen für deine Pressable-Seiten.*
 
 A small Electron desktop app (macOS and Windows 11) for routine operations on your Pressable sites through the Pressable REST API. Pick a task, then run it on your saved list of sites or on a single site:
 
@@ -28,12 +29,14 @@ The repository includes a GitHub Actions workflow (`.github/workflows/release.ym
 
 1. Create a public GitHub repository and upload this folder to it (GitHub Desktop or the web uploader both work). Public repositories get unlimited Actions minutes, and the app's auto-updater reads the Releases page anonymously.
 2. In `package.json`, set `repository.url` to your repository's URL. Optionally change `build.appId`.
-3. Make a release. Either:
-   - on GitHub: **Releases → Draft a new release**, create a tag like `v0.1.0` that matches the `version` in `package.json`, publish; or
-   - locally, if you have Node: `npm version patch && git push --follow-tags`.
+3. Push a version tag. The tag is the version; the build stamps `package.json` with it, so the app, the installer filenames and the release always agree:
+   ```bash
+   git tag v0.1.0 && git push origin v0.1.0
+   ```
+   (Creating the tag through GitHub's **Releases → Draft a new release** page works too.)
 4. Watch the **Actions** tab. After roughly five to ten minutes the release carries `Wayzgoose-for-Pressable-0.1.0-arm64.dmg`, `Wayzgoose-for-Pressable-0.1.0-x64.dmg` and `Wayzgoose-for-Pressable-0.1.0-Setup.exe`. Download and install like any other app.
 
-For each later version, bump `version` in `package.json` and repeat step 3. Installed copies check the repository for new releases every six hours and apply them on the next launch (macOS requires a signed build for this; unsigned Mac builds just keep working on the version you installed).
+For each later version, push the next tag (`v0.2.0`). Bumping `version` in `package.json` as well is tidy but not required. Installed copies check the repository for new releases every six hours and apply them on the next launch (macOS requires a signed build for this; unsigned Mac builds just keep working on the version you installed).
 
 ### First launch of an unsigned build
 

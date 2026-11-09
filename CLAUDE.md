@@ -11,7 +11,7 @@ npm start          # run from source
 npm run dist:mac   # local installer builds (CI normally does this)
 ```
 
-Releases: bump `version` in `package.json`, push, publish a GitHub Release with tag `v<version>`. `.github/workflows/release.yml` builds the installers on GitHub's Mac and Windows runners and attaches them to that release. Installed copies auto-update from Releases via electron-updater.
+Releases: push a tag `v<version>` (`git tag v0.2.0 && git push origin v0.2.0`). `.github/workflows/release.yml` stamps package.json with the tag's version, builds the installers on GitHub's Mac and Windows runners and attaches them to a release for that tag. Signing env vars are only exported when the matching secrets exist (an empty `CSC_LINK` breaks electron-builder). Installed copies auto-update from Releases via electron-updater.
 
 ## Layout
 

@@ -2,13 +2,19 @@
 # Release whenever a version tag (v1.2.3) is pushed. Nothing runs on your
 # own machine: push the tag, wait a few minutes, download from Releases.
 #
-#   npm version patch        # bumps package.json and creates the tag
-#   git push --follow-tags   # triggers this workflow
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# The tag is the version: the build stamps package.json with it, so the
+# app, the installer filenames and the release all agree even if you forgot
+# to bump package.json. A manual run (Actions → Run workflow) builds from
+# package.json's version and publishes a draft release instead.
 #
 # Signing is optional. Without certificates the installers still build and
 # run, but macOS and Windows show their "unidentified developer" prompts.
-# To sign, add the secrets listed below in Settings → Secrets → Actions.
-
+# To sign, add these secrets in Settings → Secrets and variables → Actions:
+#   macOS:   CSC_LINK (base64 .p12), CSC_KEY_PASSWORD,
+#            APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID (notarization)
+#   Windows: WIN_CSC_LINK (base64 .pfx), WIN_CSC_KEY_PASSWORD
 
 name: Release
 
@@ -42,23 +48,53 @@ jobs:
 
       - run: npm ci
 
+      - name: Use the tag as the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+
+      # electron-builder treats an empty CSC_LINK as a certificate path, so
+      # signing variables are only exported when the secrets actually exist.
+      - name: Configure code signing
+        shell: bash
+        env:
+          S_CSC_LINK: ${{ secrets.CSC_LINK }}
+          S_CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          S_WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          S_WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          S_APPLE_ID: ${{ secrets.APPLE_ID }}
+          S_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          S_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          put() { { echo "$1<<__EOF__"; echo "$2"; echo "__EOF__"; } >> "$GITHUB_ENV"; }
+          EXTRA=""
+          if [ -n "$S_CSC_LINK" ]; then
+            put CSC_LINK "$S_CSC_LINK"
+            put CSC_KEY_PASSWORD "$S_CSC_KEY_PASSWORD"
+            echo "macOS signing certificate configured"
+          else
+            echo "CSC_IDENTITY_AUTO_DISCOVERY=false" >> "$GITHUB_ENV"
+            echo "No macOS signing certificate; building unsigned"
+          fi
+          if [ -n "$S_WIN_CSC_LINK" ]; then
+            put WIN_CSC_LINK "$S_WIN_CSC_LINK"
+            put WIN_CSC_KEY_PASSWORD "$S_WIN_CSC_KEY_PASSWORD"
+            echo "Windows signing certificate configured"
+          fi
+          if [ -n "$S_APPLE_ID" ] && [ -n "$S_CSC_LINK" ]; then
+            put APPLE_ID "$S_APPLE_ID"
+            put APPLE_APP_SPECIFIC_PASSWORD "$S_APPLE_APP_SPECIFIC_PASSWORD"
+            put APPLE_TEAM_ID "$S_APPLE_TEAM_ID"
+            EXTRA="$EXTRA --config.mac.notarize=true"
+            echo "macOS notarization configured"
+          fi
+          if [[ "$GITHUB_REF" != refs/tags/v* ]]; then
+            EXTRA="$EXTRA --config.publish.releaseType=draft"
+          fi
+          echo "EXTRA_ARGS=$EXTRA" >> "$GITHUB_ENV"
+
       - name: Build and publish installers
-        run: npx electron-builder ${{ matrix.args }} --publish always
+        shell: bash
+        run: npx electron-builder ${{ matrix.args }} --publish always $EXTRA_ARGS
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # --- macOS signing + notarization (optional) ---
-          # CSC_LINK: base64 of your Developer ID Application .p12
-          # CSC_KEY_PASSWORD: its password
-          # APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID: for notarization
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # --- Windows signing (optional) ---
-          # WIN_CSC_LINK: base64 of your code-signing .pfx
-          # WIN_CSC_KEY_PASSWORD: its password
-          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-          # Build unsigned when no certificate is configured instead of failing.
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_LINK != '' }}
