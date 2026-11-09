@@ -1,7 +1,6 @@
 # Wayzgoose for Pressable
 
 *Backups, cache control and vulnerability alerts for your Pressable sites.*
-*Backups, Cache-Steuerung und Sicherheitswarnungen für deine Pressable-Seiten.*
 
 A small Electron desktop app (macOS and Windows 11) for routine operations on your Pressable sites through the Pressable REST API. Pick a task, then run it on your saved list of sites or on a single site:
 
