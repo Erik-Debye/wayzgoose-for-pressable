@@ -17,7 +17,7 @@
     "electron-builder": "26.18.0"
   },
   "build": {
-    "appId": "com.yourcompany.wayzgoose-for-pressable",
+    "appId": "com.erikdebye.wayzgoose-for-pressable",
     "productName": "Wayzgoose for Pressable",
     "files": [
       "src/**/*",
@@ -69,11 +69,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/YOUR_GITHUB_USER/wayzgoose-for-pressable.git"
+    "url": "https://github.com/Erik-Debye/wayzgoose-for-pressable.git"
   },
   "dependencies": {
     "electron-updater": "6.8.11"
   },
   "license": "MIT",
-  "author": "YOUR NAME"
+  "author": "Erik Debye"
 }

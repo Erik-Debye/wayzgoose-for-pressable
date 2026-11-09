@@ -91,6 +91,9 @@ jobs:
           if [[ "$GITHUB_REF" != refs/tags/v* ]]; then
             EXTRA="$EXTRA --config.publish.releaseType=draft"
           fi
+          # Always publish to the repository this workflow runs in, whatever
+          # package.json says, and bake the same target into the updater.
+          EXTRA="$EXTRA --config.publish.owner=$GITHUB_REPOSITORY_OWNER --config.publish.repo=${GITHUB_REPOSITORY#*/}"
           echo "EXTRA_ARGS=$EXTRA" >> "$GITHUB_ENV"
 
       - name: Build and publish installers
