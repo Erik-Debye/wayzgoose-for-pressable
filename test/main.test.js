@@ -14,9 +14,15 @@ const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'wayzgoose-test-'));
 fs.writeFileSync(path.join(userData, 'credentials.bin'), JSON.stringify({ clientId: 'id', clientSecret: 'sec' }));
 fs.writeFileSync(path.join(userData, 'config.json'), JSON.stringify({
   siteIds: ['1'], webhookUrl: 'https://hooks.slack.com/services/T/B/X', alertAutomatically: true, delayBetweenSitesMs: 0,
+  userWebhookUrl: 'https://discord.com/api/webhooks/9/zzz', watchedRoles: 'administrator', userAlertAutomatically: true,
+  uptimeWebhookUrl: 'https://discord.com/api/webhooks/9/uptime', uptimeFailuresToAlert: 1, uptimeEveryMinutes: 5, phpLogEveryMinutes: 15,
 }));
 
 const posted = [];
+const discordPosted = [];
+const wpcli = [];
+const muPlugins = [];
+let auditRound = 0;
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (url, opts = {}) => {
   const u = String(url);
@@ -35,6 +41,46 @@ globalThis.fetch = async (url, opts = {}) => {
     ] }] });
   }
   if (u.includes('/security-alerts/themes')) return jsonResponse(200, { data: [] });
+  if (u.includes('/wordpress/users')) {
+    const siteId = Number(u.match(/sites\/(\d+)\//)[1]);
+    if (siteId === 3) return jsonResponse(400, { message: 'Bad Request', errors: ['Site is not live'] });
+    const list = [{ id: 1, user_login: 'erik', user_email: 'erik@example.com', roles: ['administrator'] }, { id: 2, user_login: 'ed', roles: ['editor'] }];
+    if (siteId === 2 && auditRound > 1) list.push({ id: 7, user_login: 'intruder', user_email: 'x@evil.test', roles: ['administrator'], user_registered: '2026-11-09 22:00:00' });
+    return jsonResponse(200, { data: { users: list } });
+  }
+  if (u.includes('/logs/webserver')) {
+    const type = new URL(u).searchParams.get('request_type');
+    const logs = type === 'POST' ? [
+      { timestamp: new Date(Date.now() - 60_000).toISOString(), request_type: 'POST', path: '/wp-admin/user-new.php', status: 302, user_ip: '203.0.113.5', user_agent: 'Mozilla/5.0 (Windows NT 10.0) Chrome/130.0.0.0' },
+      { timestamp: new Date(Date.now() - 50_000).toISOString(), request_type: 'POST', path: '/wp-admin/admin-ajax.php', status: 200, user_ip: '203.0.113.5' },
+    ] : [];
+    return jsonResponse(200, { data: { logs, scroll_id: null } });
+  }
+  if (u.includes('/logs/php')) {
+    const siteId = Number(u.match(/sites\/(\d+)\//)[1]);
+    const sev = new URL(u).searchParams.get('severity');
+    const logs = siteId === 1 && sev === 'Fatal error' ? [
+      { timestamp: new Date(Date.now() - 120_000).toISOString(), severity: 'Fatal error', message: 'Uncaught Error: Call to undefined function acme() in /srv/htdocs/wp-content/plugins/acme-forms/x.php:7' },
+      { timestamp: new Date(Date.now() - 60_000).toISOString(), severity: 'Fatal error', message: 'Uncaught Error: Call to undefined function acme() in /srv/htdocs/wp-content/plugins/acme-forms/x.php:7' },
+    ] : [];
+    return jsonResponse(200, { data: { logs, scroll_id: null } });
+  }
+  if (u.endsWith('/logs/activity')) return jsonResponse(200, { data: { logs: [{ created: new Date(Date.now() - 30_000).toISOString(), description: 'Executed WP-CLI command', email: 'erik@example.com', ipAddress: '203.0.113.5', source: 'ui' }] } });
+  if (u.endsWith('/wordpress/wpcli')) { wpcli.push([u.match(/sites\/(\d+)\//)[1], JSON.parse(opts.body).commands]); return jsonResponse(200, { data: null }); }
+  if (u.endsWith('/v1/mu-plugins') && opts.method === 'POST') { muPlugins.push(JSON.parse(opts.body)); return jsonResponse(201, { data: { id: 42, ...JSON.parse(opts.body) } }); }
+  if (u.endsWith('/v1/mu-plugins')) return jsonResponse(200, { data: muPlugins.map((m, i) => ({ id: 42 + i, ...m })) });
+  if (u.includes('/v1/mu-plugins/') && opts.method === 'PUT') return jsonResponse(200, { data: { id: 42 } });
+  if (u.startsWith('https://discord.com/api/webhooks/')) { discordPosted.push(JSON.parse(opts.body)); return jsonResponse(204, ''); }
+  if (/\/v1\/sites\/\d+$/.test(u)) { const id = Number(u.match(/(\d+)$/)[1]); return jsonResponse(200, { data: { id, name: 'x', displayName: 'x', url: id === 1 ? 'acmedental.com' : id === 2 ? 'blueriver.com' : 's.com', phpVersion: '8.3', state: 'live' } }); }
+  const htmlRes = (body, finalUrl, headersObj = {}) => { const hm = new Map(Object.entries({ 'content-type': 'text/html', ...headersObj })); return { ok: true, status: 200, url: finalUrl, text: async () => body, headers: { forEach: (fn) => hm.forEach((v, k) => fn(v, k)), get: (k) => hm.get(k) ?? null }, body: { cancel: async () => {} } }; };
+  if (u === 'https://acmedental.com/') return htmlRes('<html><head><meta name="generator" content="WordPress 6.7"><link rel="https://api.w.org/" href="https://acmedental.com/wp-json/"></head></html>', u);
+  if (u === 'https://acmedental.com/wp-json/') return htmlRes(JSON.stringify({ url: 'https://acmedental.com', home: 'https://acmedental.com' }), u);
+  if (u === 'https://acmedental.com/robots.txt') return htmlRes('User-agent: *\nDisallow: /wp-admin/', u);
+  if (u === 'https://s.com/') return htmlRes('<html><head><meta name="robots" content="noindex"><link rel="https://api.w.org/" href="https://s-staging.mystagingwebsite.com/wp-json/"></head></html>', 'https://s-staging.mystagingwebsite.com/');
+  if (u === 'https://s-staging.mystagingwebsite.com/wp-json/') return htmlRes(JSON.stringify({ url: 'https://s-staging.mystagingwebsite.com', home: 'https://s-staging.mystagingwebsite.com' }), u);
+  if (u === 'https://s.com/robots.txt') return htmlRes('', u);
+  if (u === 'https://blueriver.com/wp-json/' || u === 'https://blueriver.com/robots.txt') return { ...jsonResponse(503, ''), url: u };
+  if (u === 'https://blueriver.com/') return { ...jsonResponse(503, ''), url: u };
   if (u.includes('/ondemand-backups') && opts.method === 'POST') return jsonResponse(201, { data: { id: 500, backup_type: JSON.parse(opts.body).backup_type, state: 'pending' } });
   if (u.includes('/ondemand-backups')) return jsonResponse(200, { data: [] });
   if (u.includes('cveawg.mitre.org')) {
@@ -46,6 +92,10 @@ globalThis.fetch = async (url, opts = {}) => {
   if (u.startsWith('https://hooks.slack.com/')) { posted.push(JSON.parse(opts.body)); return jsonResponse(200, 'ok'); }
   return jsonResponse(404, { message: `unexpected ${u}` });
 };
+
+// Keep TLS handshakes off the network: pretend every site has a cert with 40 days left.
+const uptimeMod = require('../src/uptime');
+uptimeMod.checkTls = async (host) => uptimeMod.certInfo({ valid_to: new Date(Date.now() + 40 * 86_400_000).toUTCString(), valid_from: new Date().toUTCString(), issuer: { O: 'Test CA' }, subject: { CN: host } }, true, null);
 
 const electron = makeFakeElectron(userData);
 const restore = installFakeElectron(electron);
@@ -104,4 +154,129 @@ test('vulnerability check groups sites, enriches the CVE and alerts once', async
   const seen = JSON.parse(fs.readFileSync(path.join(userData, 'seen-findings.json'), 'utf8'));
   assert.deepEqual(Object.keys(seen).sort(), ['CVE-2018-6710|1', 'CVE-2018-6710|2']);
   assert.ok(fs.existsSync(path.join(userData, 'cve-cache.json')));
+});
+
+test('user audit records a baseline, then alerts on a new administrator', async () => {
+  auditRound = 1;
+  electron._sent.length = 0;
+  await h.get('users:audit')({}, { scope: 'all', notify: true });
+  await waitFor(() => electron._sent.some(([c, p]) => c === 'audit:event' && p.kind === 'finished'));
+  const first = electron._sent.find(([c, p]) => c === 'audit:event' && p.kind === 'finished')[1].result;
+  assert.equal(first.checked, 2);
+  assert.ok(first.sites.every((s) => s.baseline));
+  assert.equal(first.events.length, 0);
+  assert.deepEqual(first.errors.map((e) => e.siteName), ['Sandbox']);
+  assert.equal(discordPosted.length, 0, 'baseline is silent');
+
+  auditRound = 2;
+  electron._sent.length = 0;
+  await h.get('users:audit')({}, { scope: 'all', notify: true });
+  await waitFor(() => electron._sent.some(([c, p]) => c === 'audit:event' && p.kind === 'finished'));
+  const second = electron._sent.find(([c, p]) => c === 'audit:event' && p.kind === 'finished')[1].result;
+  assert.equal(second.events.length, 1);
+  assert.equal(second.events[0].kind, 'added');
+  assert.equal(second.events[0].user.login, 'intruder');
+  assert.equal(second.events[0].siteName, 'Blue River');
+  assert.equal(second.notified.ok, true);
+  assert.equal(discordPosted.length, 1, 'single change, single embed, no summary');
+  assert.match(discordPosted[0].embeds[0].title, /New privileged user on Blue River/);
+  const f = second.events[0].forensics;
+  assert.equal(f.requestsChecked, true);
+  assert.deepEqual(f.requests.map((r) => r.path), ['/wp-admin/user-new.php', '/wp-admin/admin-ajax.php']);
+  assert.equal(f.activity.length, 1);
+  assert.match(discordPosted[0].embeds[0].description, /POST \/wp-admin\/user-new\.php → 302 · from 203\.0\.113\.5/);
+  assert.match(discordPosted[0].embeds[0].description, /Executed WP-CLI command · by erik@example\.com/);
+  assert.equal(second.events[0].sessionCheck.requested, true);
+  const evalCall = wpcli.find(([id, cmds]) => id === '2' && cmds[0].startsWith('eval '));
+  assert.ok(evalCall, 'session check sent to the changed site through WP-CLI');
+  assert.match(evalCall[1][0], /WP_Session_Tokens/);
+  assert.match(discordPosted[0].embeds[0].description, /session check was sent to the site/);
+  const blue = second.sites.find((s) => s.siteName === 'Blue River');
+  assert.ok(blue.privileged.find((u) => u.login === 'intruder').isNew);
+});
+
+test('sentinel install registers the mu-plugin once and configures each site', async () => {
+  electron._sent.length = 0;
+  await h.get('sentinel:install')({}, { scope: 'all' });
+  await waitFor(() => electron._sent.some(([c, p]) => c === 'sentinel:event' && p.kind === 'finished'));
+  const r = electron._sent.find(([c, p]) => c === 'sentinel:event' && p.kind === 'finished')[1].result;
+  assert.equal(r.ok, true);
+  assert.equal(r.registration.action, 'created');
+  assert.match(r.registration.source, /raw\.githubusercontent\.com\/Erik-Debye\/wayzgoose-for-pressable\/main\/mu-plugin\/wayzgoose-sentinel\.php$/);
+  assert.equal(muPlugins.length, 1);
+  assert.deepEqual([muPlugins[0].existing_sites, muPlugins[0].future_sites], [true, true]);
+  assert.equal(r.sites.length, 3);
+  assert.ok(r.sites.every((s) => s.configured === 'wp-config constant' && s.tested && !s.error));
+  // per site: constants, then the test hook (the earlier audit test also ran an eval on site 2)
+  const site1 = wpcli.filter(([id]) => id === '1');
+  assert.equal(site1.length, 2);
+  assert.match(site1[0][1][0], /config set WAYZGOOSE_SENTINEL_WEBHOOK 'https:\/\/discord\.com\/api\/webhooks\/9\/zzz'/);
+  assert.match(site1[1][1][0], /wayzgoose_sentinel_test/);
+
+  const status = await h.get('sentinel:status')();
+  assert.equal(status.registered, true);
+
+  // second install updates instead of creating a duplicate
+  electron._sent.length = 0;
+  await h.get('sentinel:install')({}, { scope: 'single', siteId: 1 });
+  await waitFor(() => electron._sent.some(([c, p]) => c === 'sentinel:event' && p.kind === 'finished'));
+  const again = electron._sent.find(([c, p]) => c === 'sentinel:event' && p.kind === 'finished')[1].result;
+  assert.equal(again.registration.action, 'updated');
+  assert.equal(muPlugins.length, 1);
+});
+
+test('uptime check probes live sites, reports a 503 as down once and recovery once', async () => {
+  const uptimePosts = () => discordPosted.filter((p) => p.embeds && /is (down|back up)/.test(p.embeds[0].title));
+  electron._sent.length = 0;
+  const start = await h.get('uptime:check')({}, { scope: 'live', notify: true });
+  assert.equal(start.siteCount, 3);
+  await waitFor(() => electron._sent.some(([c, p]) => c === 'uptime:event' && p.kind === 'finished'), 20_000);
+  const r = electron._sent.find(([c, p]) => c === 'uptime:event' && p.kind === 'finished')[1].result;
+  assert.equal(r.checked, 3);
+  assert.equal(r.up, 2);
+  assert.equal(r.down, 1);
+  assert.equal(r.sites[0].siteName, 'Blue River', 'down sites sort first');
+  const kinds = r.events.map((e) => `${e.siteName}:${e.kind}`).sort();
+  assert.deepEqual(kinds, ['Acme Dental:php-fatal', 'Blue River:down']);
+  assert.equal(r.notified.ok, true);
+  assert.equal(uptimePosts().length, 1, 'one down alert');
+  assert.match(uptimePosts()[0].embeds[0].title, /🔴 Blue River is down/);
+  const fatalPost = discordPosted.find((p) => p.embeds && /PHP fatal/.test(p.embeds[0].title));
+  assert.ok(fatalPost, 'php fatal alert posted');
+  assert.match(fatalPost.embeds[0].description, /plugin acme-forms/);
+  const acme = r.sites.find((s) => s.siteName === 'Acme Dental');
+  assert.ok(acme.tls.daysLeft >= 39 && acme.tls.daysLeft <= 40);
+  assert.equal(acme.php.count24h, 2);
+
+  // still down, same fatal: no second alert of either kind
+  electron._sent.length = 0;
+  const before = discordPosted.length;
+  await h.get('uptime:check')({}, { scope: 'live', notify: true });
+  await waitFor(() => electron._sent.some(([c, p]) => c === 'uptime:event' && p.kind === 'finished'), 20_000);
+  assert.equal(uptimePosts().length, 1);
+  assert.equal(discordPosted.length, before, 'nothing new posted');
+
+  const last = await h.get('uptime:lastResult')();
+  assert.equal(last.sites.find((s) => s.siteId === '2').status, 'down');
+  assert.equal(last.sites.find((s) => s.siteId === '2').failures, 2);
+});
+
+test('config check flags the production site that carries staging configuration', async () => {
+  electron._sent.length = 0;
+  const start = await h.get('config:check')({}, { scope: 'all', deep: true });
+  assert.equal(start.siteCount, 3);
+  await waitFor(() => electron._sent.some(([c, p]) => c === 'config:event' && p.kind === 'finished'), 20_000);
+  const r = electron._sent.find(([c, p]) => c === 'config:event' && p.kind === 'finished')[1].result;
+  assert.equal(r.checked, 3);
+  const sandbox = r.sites.find((s) => s.siteName === 'Sandbox');
+  assert.equal(sandbox.worst, 'high');
+  assert.ok(sandbox.findings.some((f) => f.code === 'staging-address-on-production'));
+  assert.ok(sandbox.findings.some((f) => f.code === 'noindex' && f.severity === 'high'));
+  const acme = r.sites.find((s) => s.siteName === 'Acme Dental');
+  assert.equal(acme.worst, 'ok');
+  assert.equal(acme.facts.phpVersion, '8.3', 'site detail merged in');
+  assert.equal(r.sites[0].worst, 'high', 'worst first (Blue River answers 503, Sandbox carries staging config)');
+  assert.equal(r.sites[2].worst, 'ok');
+  assert.ok(r.sites.every((s) => s.deep && s.deep.requested), 'deep reports requested on every site');
+  assert.ok(wpcli.some(([, cmds]) => /DISALLOW_FILE_MODS/.test(cmds[0])), 'config-report script sent through WP-CLI');
 });

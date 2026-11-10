@@ -42,6 +42,43 @@ contextBridge.exposeInMainWorld('pressable', {
       return () => ipcRenderer.removeListener('scan:event', handler);
     },
   },
+  users: {
+    audit: (options) => ipcRenderer.invoke('users:audit', options),
+    cancel: () => ipcRenderer.invoke('users:cancel'),
+    lastResult: () => ipcRenderer.invoke('users:lastResult'),
+    onEvent: (callback) => {
+      const handler = (_event, payload) => callback(payload);
+      ipcRenderer.on('audit:event', handler);
+      return () => ipcRenderer.removeListener('audit:event', handler);
+    },
+  },
+  sentinel: {
+    install: (options) => ipcRenderer.invoke('sentinel:install', options),
+    status: () => ipcRenderer.invoke('sentinel:status'),
+    onEvent: (callback) => {
+      const handler = (_event, payload) => callback(payload);
+      ipcRenderer.on('sentinel:event', handler);
+      return () => ipcRenderer.removeListener('sentinel:event', handler);
+    },
+  },
+  uptime: {
+    check: (options) => ipcRenderer.invoke('uptime:check', options),
+    lastResult: () => ipcRenderer.invoke('uptime:lastResult'),
+    onEvent: (callback) => {
+      const handler = (_event, payload) => callback(payload);
+      ipcRenderer.on('uptime:event', handler);
+      return () => ipcRenderer.removeListener('uptime:event', handler);
+    },
+  },
+  config_check: {
+    check: (options) => ipcRenderer.invoke('config:check', options),
+    lastResult: () => ipcRenderer.invoke('config:lastResult'),
+    onEvent: (callback) => {
+      const handler = (_event, payload) => callback(payload);
+      ipcRenderer.on('config:event', handler);
+      return () => ipcRenderer.removeListener('config:event', handler);
+    },
+  },
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   openDataFolder: () => ipcRenderer.invoke('shell:openDataFolder'),
 });

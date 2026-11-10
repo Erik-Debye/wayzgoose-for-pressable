@@ -36,6 +36,9 @@
           <button type="button" class="seg" data-task="cache" role="radio" aria-checked="false">Clear cache</button>
           <button type="button" class="seg" data-task="preload" role="radio" aria-checked="false">Cache preload</button>
           <button type="button" class="seg" data-task="security" role="radio" aria-checked="false">Security</button>
+          <button type="button" class="seg" data-task="users" role="radio" aria-checked="false">Users</button>
+          <button type="button" class="seg" data-task="uptime" role="radio" aria-checked="false">Uptime</button>
+          <button type="button" class="seg" data-task="config" role="radio" aria-checked="false">Config</button>
         </div>
 
         <div class="task-options" id="opts-backup">
@@ -55,6 +58,49 @@
           <label><input type="radio" name="security-scope" id="security-list" value="list"> Only my list</label>
           <label class="opt-secondary"><input type="checkbox" id="security-notify"> Send new findings to Slack/Discord <span id="security-notify-hint"></span></label>
           <p class="note">Checks every plugin and theme against WPScan’s vulnerability data (the same data behind MyPressable’s Security Alerts), then looks each CVE up for its severity and the access an attacker needs. Pressable refreshes this data daily, so once a day is plenty.</p>
+        </div>
+
+        <div class="task-options" id="opts-users" hidden>
+          <label><input type="radio" name="users-scope" id="users-all" value="all" checked> All sites on the account</label>
+          <label><input type="radio" name="users-scope" id="users-list" value="list"> Only my list</label>
+          <label class="opt-secondary"><input type="checkbox" id="users-notify"> Send changes to the user-alerts channel <span id="users-notify-hint"></span></label>
+          <p class="note">Lists every site’s WordPress users and keeps the ones holding a watched role (<span id="users-roles-label">administrator</span>). Each check is compared with the last one, so new, promoted and removed accounts are reported, together with the web server requests and Pressable actions that could have made the change (how and from where). The first check of a site records a baseline. For instant alerts that also name the WordPress user, install the optional sentinel below.</p>
+          <div class="sentinel">
+            <span id="sentinel-status">Sentinel: checking…</span>
+            <button class="btn btn-small" id="btn-sentinel" type="button">Install sentinel on these sites</button>
+          </div>
+        </div>
+
+        <div class="task-options" id="opts-uptime" hidden>
+          <label><input type="radio" name="uptime-scope" id="uptime-live" value="live" checked> All live sites</label>
+          <label><input type="radio" name="uptime-scope" id="uptime-list" value="list"> Only my list</label>
+          <label class="opt-secondary"><input type="checkbox" id="uptime-staging"> Include staging and sandbox sites</label>
+          <label class="opt-secondary">Check every
+            <select class="input input-inline" id="uptime-every">
+              <option value="0">off</option>
+              <option value="1">minute</option>
+              <option value="5">5 minutes</option>
+              <option value="10">10 minutes</option>
+              <option value="15">15 minutes</option>
+            </select>
+            <span id="uptime-every-hint"></span>
+          </label>
+          <label class="opt-secondary">Look for PHP fatal errors every
+            <select class="input input-inline" id="php-every">
+              <option value="0">never</option>
+              <option value="15">15 minutes</option>
+              <option value="30">30 minutes</option>
+              <option value="60">hour</option>
+            </select>
+          </label>
+          <p class="note">Loads each site’s homepage from this machine. A site counts as down when it doesn’t answer, or answers with a server error (5xx), on <span id="uptime-failures-label">2</span> checks in a row; a failed probe is retried once a few seconds later inside the same check. One alert when a site goes down, one when it’s back, with how long it was out. Each check also reads the site’s TLS certificate (hourly) and warns 14, 7, 3 and 1 days before it expires, and can pull the site’s PHP error log from Pressable to report new fatal errors, which usually precede an outage. Monitoring runs while this app is open, or around the clock on a self-hosted server.</p>
+        </div>
+
+        <div class="task-options" id="opts-config" hidden>
+          <label><input type="radio" name="config-scope" id="config-all" value="all" checked> All live sites</label>
+          <label><input type="radio" name="config-scope" id="config-list" value="list"> Only my list</label>
+          <label class="opt-secondary"><input type="checkbox" id="config-deep"> Deep check: also post each site’s wp-config.php constants to the alerts channel <span id="config-deep-hint"></span></label>
+          <p class="note">Compares what Pressable records for each site with what the site says about itself: where WordPress thinks it lives (home and siteurl from /wp-json/), where the homepage redirects, its canonical link, whether search engines are blocked, and its robots.txt. Catches a staging push that carried its configuration onto production. The deep check runs a WP-CLI job on each site that reads wp-config.php and reports to the channel, since the API can’t return WP-CLI output directly.</p>
         </div>
 
         <div class="task-options" id="opts-preload" hidden>
@@ -101,6 +147,46 @@
         </div>
         <p class="findings-note" id="findings-note" hidden></p>
         <div class="findings-list" id="findings-list"></div>
+      </section>
+
+      <section class="findings" id="admins" hidden>
+        <div class="findings-head">
+          <div>
+            <h3 id="admins-title">Privileged users</h3>
+            <p class="findings-meta" id="admins-meta"></p>
+          </div>
+          <div class="log-tools">
+            <button class="btn btn-small btn-quiet" id="btn-hide-admins" type="button">Hide</button>
+          </div>
+        </div>
+        <p class="findings-note" id="admins-note" hidden></p>
+        <div class="findings-list" id="admins-list"></div>
+      </section>
+
+      <section class="findings" id="uptime-panel" hidden>
+        <div class="findings-head">
+          <div>
+            <h3 id="uptime-title">Uptime</h3>
+            <p class="findings-meta" id="uptime-meta"></p>
+          </div>
+          <div class="log-tools">
+            <button class="btn btn-small btn-quiet" id="btn-hide-uptime" type="button">Hide</button>
+          </div>
+        </div>
+        <div class="findings-list" id="uptime-rows"></div>
+      </section>
+
+      <section class="findings" id="config-panel" hidden>
+        <div class="findings-head">
+          <div>
+            <h3 id="config-title">Configuration</h3>
+            <p class="findings-meta" id="config-meta"></p>
+          </div>
+          <div class="log-tools">
+            <button class="btn btn-small btn-quiet" id="btn-hide-config" type="button">Hide</button>
+          </div>
+        </div>
+        <div class="findings-list" id="config-rows"></div>
       </section>
 
       <div class="log">
@@ -165,6 +251,69 @@
         <button class="btn btn-quiet" id="btn-test-webhook" type="button">Send test message</button>
         <span class="spacer"></span>
         <button class="btn" id="btn-save-alerts" type="button">Save alert settings</button>
+      </div>
+
+      <h2 class="settings-sub">User privilege alerts</h2>
+      <p class="help">A second webhook, kept separate so role changes stand out. Used by the audit in this app and by the sentinel mu-plugin on your sites.</p>
+      <label class="field">
+        <span>Webhook URL</span>
+        <input class="input" id="user-webhook-url" type="url" placeholder="https://discord.com/api/webhooks/… or https://hooks.slack.com/services/…" autocomplete="off" spellcheck="false">
+      </label>
+      <label class="field">
+        <span>Roles to watch (comma-separated)</span>
+        <input class="input" id="watched-roles" type="text" placeholder="administrator" autocomplete="off" spellcheck="false">
+      </label>
+      <p class="status" id="users-status" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" id="btn-test-user-webhook" type="button">Send test message</button>
+        <span class="spacer"></span>
+        <button class="btn" id="btn-save-users" type="button">Save user alert settings</button>
+      </div>
+
+      <h2 class="settings-sub">Uptime alerts</h2>
+      <p class="help">A third webhook, so outages don’t get lost among vulnerability and user alerts.</p>
+      <label class="field">
+        <span>Webhook URL</span>
+        <input class="input" id="uptime-webhook-url" type="url" placeholder="https://discord.com/api/webhooks/… or https://hooks.slack.com/services/…" autocomplete="off" spellcheck="false">
+      </label>
+      <label class="field">
+        <span>Report a site as down after</span>
+        <select class="input" id="uptime-failures">
+          <option value="1">1 failed check (fastest, more false alarms)</option>
+          <option value="2">2 failed checks in a row</option>
+          <option value="3">3 failed checks in a row</option>
+        </select>
+      </label>
+      <p class="status" id="uptime-status" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" id="btn-test-uptime-webhook" type="button">Send test message</button>
+        <span class="spacer"></span>
+        <button class="btn" id="btn-save-uptime" type="button">Save uptime settings</button>
+      </div>
+
+      <h2 class="settings-sub">Schedule</h2>
+      <p class="help">Runs while the desktop app is open, or around the clock on a self-hosted server.</p>
+      <div class="schedule-grid">
+        <label class="field">
+          <span>User audit every</span>
+          <select class="input" id="audit-every">
+            <option value="0">only with the daily check</option>
+            <option value="1">hour</option>
+            <option value="3">3 hours</option>
+            <option value="6">6 hours</option>
+            <option value="12">12 hours</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Back up your list daily at</span>
+          <input class="input" id="backup-at" type="time" step="60">
+        </label>
+      </div>
+      <p class="help">Leave the backup time empty to disable it. The daily vulnerability check is the checkbox above.</p>
+      <p class="status" id="schedule-status" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <span class="spacer"></span>
+        <button class="btn" id="btn-save-schedule" type="button">Save schedule</button>
       </div>
 
       <div class="dialog-actions dialog-footer">

@@ -145,6 +145,11 @@ class PressableClient {
     return sites;
   }
 
+  async getSite(siteId) {
+    const res = await this.request('GET', `/sites/${siteId}`);
+    return res && res.data;
+  }
+
   // ----- On-demand backups -----
   // Each site can hold at most 3 filesystem and 3 database on-demand backups.
 
@@ -180,6 +185,104 @@ class PressableClient {
 
   async listSecurityAlerts(siteId, kind) {
     const res = await this.request('GET', `/sites/${siteId}/security-alerts/${kind}`);
+    return res && res.data;
+  }
+
+  // ----- WordPress users / WP-CLI -----
+
+  // GET /sites/{id}/wordpress/users is paginated (page, per_page). The docs
+  // show the paging fields as a JSON body; they're sent as query params here
+  // since a GET can't carry a body, and the client stops after one page if
+  // no paging block comes back.
+  async listWordpressUsers(siteId) {
+    const users = [];
+    let page = 1;
+    for (;;) {
+      const res = await this.request('GET', `/sites/${siteId}/wordpress/users`, { query: { page, per_page: 100 } });
+      const data = res && res.data;
+      const batch = Array.isArray(data) ? data : (data && Array.isArray(data.users) ? data.users : []);
+      users.push(...batch);
+      const pageInfo = (res && res.page) || (data && data.page) || null;
+      const next = pageInfo ? pageInfo.nextPage : null;
+      if (!next || batch.length === 0 || next === page) break;
+      page = next;
+    }
+    return users;
+  }
+
+  // Runs WP-CLI commands on a site. Each entry is the part after "wp ".
+  async runWpCli(siteId, commands) {
+    const res = await this.request('POST', `/sites/${siteId}/wordpress/wpcli`, { body: { commands } });
+    return res && res.data;
+  }
+
+  // ----- Logs -----
+  // Web server (nginx access) logs: 7 days, 200 per page, paged with scroll_id,
+  // filterable by status, request_type (GET/POST/PUT/PATCH/DELETE) and user_ip.
+  // The docs list the path as /logs/webserver and show /logs/server in the
+  // example, so the second is tried if the first 404s.
+
+  async listWebserverLogs(siteId, { requestType, status, userIp, scrollId } = {}) {
+    const query = { request_type: requestType, status, user_ip: userIp, scroll_id: scrollId };
+    let res;
+    try {
+      res = await this.request('GET', `/sites/${siteId}/logs/webserver`, { query });
+    } catch (err) {
+      if (err.status !== 404) throw err;
+      res = await this.request('GET', `/sites/${siteId}/logs/server`, { query });
+    }
+    const data = res && res.data;
+    const logs = Array.isArray(data) ? data : (data && Array.isArray(data.logs) ? data.logs : []);
+    const nextScrollId = (data && (data.scroll_id ?? data.scrollId)) ?? (res && (res.scroll_id ?? res.scrollId)) ?? null;
+    return { logs, scrollId: nextScrollId };
+  }
+
+  // PHP error log: 7 days, filterable by severity ("Fatal error",
+  // "Parse error", "Warning", "Deprecated", "User"); paged with scroll_id
+  // like the web server log. Path from the docs index; a fallback is tried
+  // on 404.
+  async listPhpLogs(siteId, { severity, scrollId } = {}) {
+    const query = { severity, scroll_id: scrollId };
+    let res;
+    try {
+      res = await this.request('GET', `/sites/${siteId}/logs/php`, { query });
+    } catch (err) {
+      if (err.status !== 404) throw err;
+      res = await this.request('GET', `/sites/${siteId}/logs/php-errors`, { query });
+    }
+    const data = res && res.data;
+    const logs = Array.isArray(data) ? data : (data && Array.isArray(data.logs) ? data.logs : (data && Array.isArray(data.entries) ? data.entries : []));
+    const nextScrollId = (data && (data.scroll_id ?? data.scrollId)) ?? (res && (res.scroll_id ?? res.scrollId)) ?? null;
+    return { logs, scrollId: nextScrollId };
+  }
+
+  // Site activity log (Pressable-level actions on the site, 30 days): who
+  // ran WP-CLI, opened phpMyAdmin, restored a backup, etc.
+  async listSiteActivity(siteId, { page = 1, perPage = 50 } = {}) {
+    const res = await this.request('POST', `/sites/${siteId}/logs/activity`, { body: { page, per_page: perPage } });
+    const data = res && res.data;
+    if (Array.isArray(data)) return data;
+    if (data && Array.isArray(data.logs)) return data.logs;
+    if (data && Array.isArray(data.activities)) return data.activities;
+    return [];
+  }
+
+  // ----- Account-wide must-use plugins -----
+  // POST registers a file by URL and installs it on existing and/or future sites.
+
+  async listMuPlugins() {
+    const res = await this.request('GET', '/mu-plugins');
+    const data = res && res.data;
+    return Array.isArray(data) ? data : (data && Array.isArray(data.muPlugins) ? data.muPlugins : []);
+  }
+
+  async createMuPlugin({ path, existingSites = true, futureSites = true }) {
+    const res = await this.request('POST', '/mu-plugins', { body: { path, existing_sites: existingSites, future_sites: futureSites } });
+    return res && res.data;
+  }
+
+  async updateMuPlugin(id, { path, existingSites = true, futureSites = true }) {
+    const res = await this.request('PUT', `/mu-plugins/${id}`, { body: { path, existing_sites: existingSites, future_sites: futureSites } });
     return res && res.data;
   }
 

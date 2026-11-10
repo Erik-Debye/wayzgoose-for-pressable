@@ -10,7 +10,8 @@
     "test": "node --test \"test/*.test.js\"",
     "dist": "electron-builder",
     "dist:mac": "electron-builder --mac",
-    "dist:win": "electron-builder --win"
+    "dist:win": "electron-builder --win",
+    "serve": "node src/server/server.js"
   },
   "devDependencies": {
     "electron": "44.9.3",
@@ -21,6 +22,7 @@
     "productName": "Wayzgoose for Pressable",
     "files": [
       "src/**/*",
+      "scripts/**/*",
       "package.json"
     ],
     "directories": {

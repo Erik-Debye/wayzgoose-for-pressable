@@ -24,6 +24,13 @@ const state = {
   statusRequest: 0,
   scanning: false,
   lastScan: null,
+  auditing: false,
+  installing: false,
+  lastAudit: null,
+  checkingUptime: false,
+  lastUptime: null,
+  checkingConfig: false,
+  lastConfig: null,
 };
 
 // ---------- Helpers ----------
@@ -91,6 +98,56 @@ function writeSecurityForm(cfg) {
   const hasWebhook = Boolean(cfg.webhookUrl);
   $('security-notify').disabled = !hasWebhook;
   $('security-notify-hint').textContent = hasWebhook ? '' : '(add a webhook in Settings)';
+
+  // The user audit shares the scope choice with the vulnerability check.
+  $('users-all').checked = cfg.securityScope !== 'list';
+  $('users-list').checked = cfg.securityScope === 'list';
+  $('users-notify').checked = Boolean(cfg.userAlertAutomatically);
+  const hasUserWebhook = Boolean(cfg.userWebhookUrl);
+  $('users-notify').disabled = !hasUserWebhook;
+  $('users-notify-hint').textContent = hasUserWebhook ? '' : '(add a webhook in Settings)';
+  $('users-roles-label').textContent = (cfg.watchedRoles || 'administrator').split(/[,\s]+/).filter(Boolean).join(', ');
+  $('btn-sentinel').disabled = !hasUserWebhook || state.installing;
+}
+
+function readUptimeForm() {
+  return {
+    uptimeScope: $('uptime-list').checked ? 'list' : 'live',
+    uptimeIncludeStaging: $('uptime-staging').checked,
+    uptimeEveryMinutes: Number($('uptime-every').value) || 0,
+    phpLogEveryMinutes: Number($('php-every').value) || 0,
+  };
+}
+
+function writeUptimeForm(cfg) {
+  $('uptime-live').checked = cfg.uptimeScope !== 'list';
+  $('uptime-list').checked = cfg.uptimeScope === 'list';
+  $('uptime-staging').checked = Boolean(cfg.uptimeIncludeStaging);
+  $('uptime-every').value = String(cfg.uptimeEveryMinutes || 0);
+  $('php-every').value = String(cfg.phpLogEveryMinutes ?? 15);
+  const hasWebhook = Boolean(cfg.uptimeWebhookUrl);
+  $('uptime-every-hint').textContent = hasWebhook ? '' : '(alerts need a webhook in Settings)';
+  $('uptime-failures-label').textContent = String(cfg.uptimeFailuresToAlert || 2);
+}
+
+function readConfigForm() {
+  return { configScope: $('config-list').checked ? 'list' : 'all', configDeep: $('config-deep').checked };
+}
+
+function writeConfigForm(cfg) {
+  $('config-all').checked = cfg.configScope !== 'list';
+  $('config-list').checked = cfg.configScope === 'list';
+  $('config-deep').checked = Boolean(cfg.configDeep);
+  const hasWebhook = Boolean(cfg.webhookUrl);
+  $('config-deep').disabled = !hasWebhook;
+  $('config-deep-hint').textContent = hasWebhook ? '' : '(needs the vulnerability alerts webhook in Settings)';
+}
+
+function readUsersForm() {
+  return {
+    securityScope: $('users-list').checked ? 'list' : 'all',
+    userAlertAutomatically: $('users-notify').checked,
+  };
 }
 
 function writeTaskForm(t) {
@@ -108,6 +165,9 @@ function writeTaskForm(t) {
   $('opts-cache').hidden = t.kind !== 'cache';
   $('opts-preload').hidden = t.kind !== 'preload';
   $('opts-security').hidden = t.kind !== 'security';
+  $('opts-users').hidden = t.kind !== 'users';
+  $('opts-uptime').hidden = t.kind !== 'uptime';
+  $('opts-config').hidden = t.kind !== 'config';
 }
 
 // Is the task runnable as configured?
@@ -166,6 +226,44 @@ function taskCopy(t, siteCount) {
         scopeCount: count,
       };
     }
+    case 'config': {
+      const scopeList = state.config.configScope === 'list';
+      const pool = scopeList ? state.sites.filter((s) => selectedIds().has(String(s.id))) : state.sites.filter((s) => !s.state || s.state === 'live');
+      return {
+        listTitle: 'Check configuration',
+        listSummary: `Compares Pressable’s record of ${plural(pool.length, 'site')} ${scopeList ? 'on your list' : 'on your account'} with what each site reports about itself.`,
+        listButton: `Check ${plural(pool.length, 'site')}`,
+        singleButton: 'Check this site',
+        runLabel: 'config check',
+        scopeCount: pool.length,
+      };
+    }
+    case 'uptime': {
+      const scopeList = state.config.uptimeScope === 'list';
+      const pool = scopeList ? state.sites.filter((s) => selectedIds().has(String(s.id))) : state.sites;
+      const count = pool.filter((s) => (state.config.uptimeIncludeStaging || (!s.staging && !s.sandbox)) && (!s.state || s.state === 'live')).length;
+      return {
+        listTitle: 'Check uptime now',
+        listSummary: `Loads the homepage of ${plural(count, 'site')} ${scopeList ? 'on your list' : 'on your account'} and reports any that don’t answer.`,
+        listButton: `Check ${plural(count, 'site')}`,
+        singleButton: 'Check this site',
+        runLabel: 'uptime check',
+        scopeCount: count,
+      };
+    }
+    case 'users': {
+      const scopeList = state.config.securityScope === 'list';
+      const count = scopeList ? siteCount : state.sites.length;
+      const where = scopeList ? 'on your list' : 'on your account';
+      return {
+        listTitle: 'Audit privileged users',
+        listSummary: `Lists the privileged accounts on ${plural(count, 'site')} ${where} and reports what changed since the last audit.`,
+        listButton: `Audit ${plural(count, 'site')}`,
+        singleButton: 'Audit this site',
+        runLabel: 'user audit',
+        scopeCount: count,
+      };
+    }
     default:
       return { listTitle: '', listSummary: '', listButton: 'Run', singleButton: 'Run', runLabel: '' };
   }
@@ -179,6 +277,10 @@ function itemLabel(item) {
     case 'flush-object': return 'Flush object cache';
     case 'preload': return item.enabled ? 'Preload on' : 'Preload off';
     case 'security': return 'Vulnerability check';
+    case 'audit': return 'User audit';
+    case 'sentinel': return 'Install sentinel';
+    case 'uptime': return 'Uptime check';
+    case 'config': return 'Config check';
     default: return item.kind;
   }
 }
@@ -248,9 +350,10 @@ function renderCounts() {
 
   const copy = taskCopy(t, onList);
   $('list-title').textContent = copy.listTitle;
-  const primaryCount = t.kind === 'security' ? copy.scopeCount : onList;
+  const wide = t.kind === 'security' || t.kind === 'users' || t.kind === 'uptime' || t.kind === 'config';
+  const primaryCount = wide ? copy.scopeCount : onList;
   if (primaryCount === 0) {
-    $('list-summary').textContent = t.kind === 'security' && state.config.securityScope !== 'list'
+    $('list-summary').textContent = wide && (t.kind === 'uptime' ? state.config.uptimeScope : t.kind === 'config' ? state.config.configScope : state.config.securityScope) !== 'list'
       ? 'No sites loaded yet.'
       : 'Tick sites on the left to build your list.';
   } else if (!taskReady(t)) {
@@ -260,7 +363,7 @@ function renderCounts() {
   }
   $('run-list').textContent = copy.listButton;
   $('run-single').textContent = copy.singleButton;
-  const busy = state.running || state.scanning;
+  const busy = state.running || state.scanning || state.auditing || state.installing || state.checkingUptime || state.checkingConfig;
   $('run-list').disabled = busy || primaryCount === 0 || !taskReady(t);
   $('run-single').disabled = busy || !$('single-site').value || !taskReady(t);
 }
@@ -295,6 +398,7 @@ async function loadSites() {
     renderSites();
     setConn(`Connected · ${plural(state.sites.length, 'site')}`, 'ok');
     loadSiteStatus();
+    refreshSentinelStatus();
   } catch (err) {
     setConn(err.message, 'bad');
     state.sites = [];
@@ -455,6 +559,18 @@ async function startRun(mode) {
   const siteId = mode === 'single' ? $('single-site').value : null;
   if (t.kind === 'security') {
     startScan(mode === 'single' ? 'single' : (state.config.securityScope === 'list' ? 'list' : 'all'), siteId);
+    return;
+  }
+  if (t.kind === 'users') {
+    startAudit(mode === 'single' ? 'single' : (state.config.securityScope === 'list' ? 'list' : 'all'), siteId);
+    return;
+  }
+  if (t.kind === 'uptime') {
+    startUptimeCheck(mode === 'single' ? 'single' : (state.config.uptimeScope === 'list' ? 'list' : 'live'), siteId);
+    return;
+  }
+  if (t.kind === 'config') {
+    startConfigCheck(mode === 'single' ? 'single' : (state.config.configScope === 'list' ? 'list' : 'all'), siteId);
     return;
   }
 
@@ -925,6 +1041,578 @@ async function sendFindings(onlyNew) {
   }
 }
 
+// ---------- Privileged-user audit ----------
+
+let auditRowKey = null;
+let sentinelRowKey = null;
+
+function scopeLabel(scope, siteId, siteCount) {
+  return scope === 'single' ? siteLabel(siteId) : scope === 'list' ? `${plural(siteCount, 'site')} from your list` : `all ${plural(siteCount, 'site')}`;
+}
+
+async function startAudit(scope, siteId) {
+  const notify = $('users-notify').checked && !$('users-notify').disabled;
+  try {
+    state.auditing = true;
+    state.summaryPrefix = '';
+    $('btn-cancel').hidden = false;
+    $('progress').hidden = false;
+    setProgress(0, 1, 'Starting…');
+    renderCounts();
+    const { siteCount } = await api.users.audit({ scope, siteId, notify });
+    const body = logTableBody(`${timeNow()} · ${scopeLabel(scope, siteId, siteCount)} · user audit`);
+    auditRowKey = `audit:${Date.now()}`;
+    const tr = addRow(body, auditRowKey, null, { kind: 'audit' });
+    tr.cells[0].textContent = scope === 'single' ? siteLabel(siteId) : scope === 'list' ? 'Your list' : 'All sites';
+    setRow(auditRowKey, { status: 'Working', kind: 'working', details: '' });
+  } catch (err) {
+    state.auditing = false;
+    $('btn-cancel').hidden = true;
+    $('progress').hidden = true;
+    renderCounts();
+    appendNoteRow(logTableBody(`${timeNow()} · Could not start`), err.message);
+  }
+}
+
+function handleAuditEvent(ev) {
+  switch (ev.kind) {
+    case 'started':
+      if (ev.trigger === 'scheduled' && !state.auditing) {
+        state.auditing = true;
+        $('progress').hidden = false;
+        renderCounts();
+        const body = logTableBody(`${timeNow()} · scheduled daily user audit`);
+        auditRowKey = `audit:${ev.auditId}`;
+        const tr = addRow(body, auditRowKey, null, { kind: 'audit' });
+        tr.cells[0].textContent = ev.scope === 'list' ? 'Your list' : 'All sites';
+        setRow(auditRowKey, { status: 'Working', kind: 'working', details: '' });
+      }
+      setProgress(0, ev.total, `Auditing 0 of ${ev.total} sites`);
+      break;
+    case 'site':
+      setProgress(ev.index - 1, ev.total, `Auditing ${ev.index} of ${ev.total} sites · ${ev.siteName}`);
+      break;
+    case 'forensics':
+      $('progress-text').textContent = `Change found on ${ev.siteName} · reading its web server and activity logs…`;
+      break;
+    case 'finished': {
+      state.auditing = false;
+      $('btn-cancel').hidden = !(state.running || state.scanning);
+      const r = ev.result;
+      state.lastAudit = r;
+      const privileged = r.sites.reduce((n, s) => n + s.privileged.length, 0);
+      const baselines = r.sites.filter((s) => s.baseline).length;
+      const parts = [`${plural(privileged, 'privileged account')} on ${plural(r.checked, 'site')}`];
+      if (r.events.length) parts.push(`${plural(r.events.length, 'change')} since last audit`);
+      if (baselines) parts.push(`${plural(baselines, 'baseline')} recorded`);
+      if (r.errors.length) parts.push(`${r.errors.length} could not be read`);
+      if (r.notified && r.notified.ok) parts.push('alert sent');
+      else if (r.notified && !r.notified.ok) parts.push(`alert failed: ${r.notified.error}`);
+      if (r.cancelled) parts.unshift('cancelled');
+      setRow(auditRowKey, {
+        status: r.events.length ? `${r.events.length} changed` : 'No changes',
+        kind: r.events.some((e) => e.kind === 'added' || e.kind === 'changed') ? 'failed' : r.events.length ? 'requested' : 'done',
+        details: parts.join(' · '),
+      });
+      $('progress-fill').style.width = '100%';
+      $('progress-text').textContent = `${r.cancelled ? 'Cancelled' : 'Finished'} · ${parts.join(' · ')}`;
+      renderAdmins(r);
+      renderCounts();
+      break;
+    }
+    case 'error':
+      state.auditing = false;
+      $('btn-cancel').hidden = !(state.running || state.scanning);
+      if (auditRowKey) setRow(auditRowKey, { status: 'Failed', kind: 'failed', details: ev.error });
+      renderCounts();
+      break;
+    default:
+      break;
+  }
+}
+
+function renderAdmins(result) {
+  const panel = $('admins');
+  const list = $('admins-list');
+  if (!result || !result.sites) {
+    panel.hidden = true;
+    return;
+  }
+  const privileged = result.sites.reduce((n, s) => n + s.privileged.length, 0);
+  const when = new Date(result.at).toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' });
+  $('admins-title').textContent = `${plural(privileged, 'privileged account')} across ${plural(result.checked, 'site')}`;
+  const scopeText = result.scope === 'single' ? 'one site' : result.scope === 'list' ? 'your list' : 'all sites';
+  $('admins-meta').textContent = `Watching ${result.watched.join(', ')} · audited ${scopeText} · ${when}${result.events.length ? ` · ${plural(result.events.length, 'change')} highlighted` : ''}`;
+
+  const note = $('admins-note');
+  if (result.errors && result.errors.length) {
+    note.textContent = `Could not read users for: ${result.errors.map((e) => `${e.siteName} (${e.error})`).join('; ')}`;
+    note.hidden = false;
+  } else {
+    note.hidden = true;
+  }
+
+  list.replaceChildren();
+  const sorted = [...result.sites].sort((a, b) => {
+    const ea = a.privileged.some((u) => u.isNew || u.changed) || a.removed.length;
+    const eb = b.privileged.some((u) => u.isNew || u.changed) || b.removed.length;
+    return (eb ? 1 : 0) - (ea ? 1 : 0) || a.siteName.localeCompare(b.siteName);
+  });
+  for (const site of sorted) {
+    const group = document.createElement('div');
+    group.className = 'site-group';
+    const head = document.createElement('div');
+    head.className = 'site-group-head';
+    const h4 = document.createElement('h4');
+    h4.textContent = site.siteName;
+    const meta = document.createElement('span');
+    meta.textContent = `${plural(site.privileged.length, 'privileged account')} of ${plural(site.totalUsers, 'user')}${site.baseline ? ' · baseline recorded' : ''}`;
+    head.append(h4, meta);
+    group.append(head);
+
+    const chips = document.createElement('div');
+    chips.className = 'finding-sites';
+    for (const u of site.privileged) {
+      const chip = document.createElement('span');
+      chip.className = `chip${u.isNew ? ' new' : ''}${u.changed ? ' changed' : ''}`;
+      chip.textContent = `${u.login || 'unknown'}${u.roles.length ? ` · ${u.roles.join(', ')}` : ''}${u.isNew ? ' · new' : ''}${u.changed ? ' · roles changed' : ''}`;
+      chip.title = [u.email, u.registered ? `registered ${u.registered}` : null].filter(Boolean).join(' · ');
+      chips.append(chip);
+    }
+    for (const u of site.removed) {
+      const chip = document.createElement('span');
+      chip.className = 'chip removed';
+      chip.textContent = `${u.login || 'unknown'} · removed`;
+      chips.append(chip);
+    }
+    if (site.privileged.length === 0 && site.removed.length === 0) {
+      const none = document.createElement('span');
+      none.className = 'finding-meta';
+      none.textContent = 'No accounts with a watched role.';
+      chips.append(none);
+    }
+    group.append(chips);
+
+    const siteEvents = (result.events || []).filter((e) => String(e.siteId) === String(site.siteId) && e.forensics);
+    if (siteEvents.length) {
+      const f = siteEvents[0].forensics;
+      const sc = siteEvents[0].sessionCheck;
+      const details = document.createElement('details');
+      const summary = document.createElement('summary');
+      summary.textContent = f.requests.length
+        ? `${plural(f.requests.length, 'request')} to user-management endpoints in the window · ${plural(f.activity.length, 'Pressable action')}`
+        : `No matching requests in the web server log · ${plural(f.activity.length, 'Pressable action')}`;
+      details.append(summary);
+      const ul = document.createElement('ul');
+      const lines = forensicsLinesForUi(f);
+      if (sc && sc.requested) lines.push('Session check sent to the site: it posts to your channel which role-capable users were logged in during the window.');
+      else if (sc && sc.error) lines.push(`Session check could not be started: ${sc.error}`);
+      for (const line of lines) {
+        const li = document.createElement('li');
+        li.textContent = line;
+        ul.append(li);
+      }
+      details.append(ul);
+      group.append(details);
+    }
+    list.append(group);
+  }
+  panel.hidden = false;
+}
+
+// Same content the alert carries, minus the window header line.
+function forensicsLinesForUi(f) {
+  const fmt = (t) => (t ? new Date(t).toLocaleString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', month: 'short', day: 'numeric' }) : 'time unknown');
+  const lines = [];
+  for (const r of f.requests) {
+    lines.push(`${fmt(r.time)} · ${r.method} ${r.path}${r.status ? ` → ${r.status}` : ''} · from ${r.ip || '?'}${r.userAgent ? ` · ${r.userAgent.slice(0, 90)}` : ''} (${r.what})`);
+  }
+  for (const a of f.activity) {
+    lines.push(`${fmt(a.time)} · Pressable: ${a.description || a.name || 'action'}${a.email ? ` by ${a.email}` : ''}${a.ip ? ` from ${a.ip}` : ''}`);
+  }
+  if (!f.requests.length && f.requestsChecked) lines.push('Nothing in the web server log points at wp-admin or the REST API; the change may have come from WP-CLI, a database edit, or fell outside log retention (7 days / 10,000 entries).');
+  if (f.error) lines.push(`Log lookup incomplete: ${f.error}`);
+  return lines;
+}
+
+// ---------- Sentinel ----------
+
+async function refreshSentinelStatus() {
+  const el = $('sentinel-status');
+  if (!state.sites.length) {
+    el.textContent = 'Sentinel: not connected';
+    return;
+  }
+  try {
+    const status = await api.sentinel.status();
+    el.textContent = status.registered
+      ? 'Sentinel: registered as an account-wide mu-plugin'
+      : 'Sentinel: not installed yet';
+    el.title = status.source || '';
+  } catch (err) {
+    el.textContent = `Sentinel: ${err.message}`;
+  }
+}
+
+async function startSentinelInstall() {
+  const scope = state.config.securityScope === 'list' ? 'list' : 'all';
+  try {
+    state.installing = true;
+    $('btn-sentinel').disabled = true;
+    $('progress').hidden = false;
+    setProgress(0, 1, 'Registering the sentinel mu-plugin…');
+    renderCounts();
+    const { siteCount } = await api.sentinel.install({ scope });
+    const body = logTableBody(`${timeNow()} · ${scopeLabel(scope, null, siteCount)} · install sentinel`);
+    sentinelRowKey = `sentinel:${Date.now()}`;
+    const tr = addRow(body, sentinelRowKey, null, { kind: 'sentinel' });
+    tr.cells[0].textContent = scope === 'list' ? 'Your list' : 'All sites';
+    setRow(sentinelRowKey, { status: 'Working', kind: 'working', details: '' });
+  } catch (err) {
+    state.installing = false;
+    $('progress').hidden = true;
+    renderCounts();
+    appendNoteRow(logTableBody(`${timeNow()} · Could not start`), err.message);
+  }
+}
+
+function handleSentinelEvent(ev) {
+  switch (ev.kind) {
+    case 'registered':
+      setProgress(0, 1, `Mu-plugin ${ev.action} · configuring sites…`);
+      break;
+    case 'site':
+      setProgress(ev.index - 1, ev.total, `Configuring ${ev.index} of ${ev.total} sites · ${ev.siteName}`);
+      break;
+    case 'finished': {
+      state.installing = false;
+      const r = ev.result;
+      if (!r.ok) {
+        setRow(sentinelRowKey, { status: 'Failed', kind: 'failed', details: r.error });
+        $('progress-text').textContent = `Failed · ${r.error}`;
+      } else {
+        const ok = r.sites.filter((s) => !s.error).length;
+        const failed = r.sites.filter((s) => s.error);
+        const viaOption = r.sites.filter((s) => s.configured && s.configured.startsWith('option')).length;
+        const parts = [`mu-plugin ${r.registration.action}`, `${ok} of ${r.sites.length} sites configured and tested`];
+        if (viaOption) parts.push(`${viaOption} stored as an option (wp-config not writable)`);
+        if (failed.length) parts.push(`failed: ${failed.map((s) => `${s.siteName} (${s.error})`).join('; ')}`);
+        setRow(sentinelRowKey, { status: failed.length ? `${failed.length} failed` : 'Installed', kind: failed.length ? 'requested' : 'done', details: parts.join(' · ') });
+        $('progress-fill').style.width = '100%';
+        $('progress-text').textContent = `Finished · ${parts.join(' · ')}`;
+      }
+      refreshSentinelStatus();
+      renderCounts();
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+// ---------- Uptime ----------
+
+let uptimeRowKey = null;
+
+async function startUptimeCheck(scope, siteId) {
+  try {
+    state.checkingUptime = true;
+    $('progress').hidden = false;
+    setProgress(0, 1, 'Starting…');
+    renderCounts();
+    const { siteCount } = await api.uptime.check({ scope, siteId, notify: true });
+    const body = logTableBody(`${timeNow()} · ${scope === 'single' ? siteLabel(siteId) : scope === 'list' ? `${plural(siteCount, 'site')} from your list` : `${plural(siteCount, 'live site')}`} · uptime check`);
+    uptimeRowKey = `uptime:${Date.now()}`;
+    const tr = addRow(body, uptimeRowKey, null, { kind: 'uptime' });
+    tr.cells[0].textContent = scope === 'single' ? siteLabel(siteId) : scope === 'list' ? 'Your list' : 'All live sites';
+    setRow(uptimeRowKey, { status: 'Working', kind: 'working', details: '' });
+  } catch (err) {
+    state.checkingUptime = false;
+    $('progress').hidden = true;
+    renderCounts();
+    appendNoteRow(logTableBody(`${timeNow()} · Could not start`), err.message);
+  }
+}
+
+function handleUptimeEvent(ev) {
+  switch (ev.kind) {
+    case 'started':
+      if (ev.trigger === 'scheduled') {
+        uptimeRowKey = null; // scheduled checks only get a row when something changed
+        return;
+      }
+      setProgress(0, ev.total, `Checking 0 of ${ev.total} sites`);
+      break;
+    case 'site':
+      if (uptimeRowKey) setProgress(ev.index, ev.total, `Checked ${ev.index} of ${ev.total} · ${ev.siteName}: ${ev.status === 'up' ? 'up' : ev.detail}`);
+      break;
+    case 'finished': {
+      const r = ev.result;
+      state.lastUptime = { at: r.at, sites: r.sites };
+      const summary = [`${r.up} up`, r.down ? `${r.down} down` : null, r.degraded ? `${r.degraded} failing (not yet reported)` : null].filter(Boolean).join(' · ');
+      const describe = (e) => ({
+        down: `${e.siteName} went down`,
+        up: `${e.siteName} is back`,
+        'tls-expiring': `${e.siteName} cert expires in ${e.daysLeft} d`,
+        'tls-expired': `${e.siteName} cert expired`,
+        'tls-renewed': `${e.siteName} cert renewed`,
+        'php-fatal': `${e.siteName} logging PHP fatals${e.component ? ` (${e.component})` : ''}`,
+      }[e.kind] || `${e.siteName} ${e.kind}`);
+      const changes = r.events.map(describe).join('; ');
+      if (ev.trigger === 'scheduled' || r.trigger === 'scheduled') {
+        if (r.events.length) {
+          const body = logTableBody(`${timeNow()} · scheduled uptime check`);
+          const key = `uptime:${r.checkId}`;
+          const tr = addRow(body, key, null, { kind: 'uptime' });
+          tr.cells[0].textContent = 'All monitored sites';
+          const worrying = r.events.some((e) => ['down', 'tls-expired', 'tls-expiring', 'php-fatal'].includes(e.kind));
+          setRow(key, { status: r.down ? `${r.down} down` : worrying ? 'Warning' : 'Recovered', kind: r.down ? 'failed' : worrying ? 'requested' : 'done', details: `${changes} · ${summary}${r.notified && r.notified.ok ? ' · alert sent' : r.notified && !r.notified.ok ? ` · alert failed: ${r.notified.error}` : ''}` });
+        }
+      } else {
+        state.checkingUptime = false;
+        setRow(uptimeRowKey, {
+          status: r.down ? `${r.down} down` : 'All up',
+          kind: r.down ? 'failed' : r.degraded ? 'requested' : 'done',
+          details: `${summary}${changes ? ` · ${changes}` : ''}${r.notified && r.notified.ok ? ' · alert sent' : r.notified && !r.notified.ok ? ` · alert failed: ${r.notified.error}` : ''}`,
+        });
+        $('progress-fill').style.width = '100%';
+        $('progress-text').textContent = `Finished · ${summary}`;
+      }
+      renderUptime(state.lastUptime);
+      renderCounts();
+      break;
+    }
+    case 'error':
+      state.checkingUptime = false;
+      if (uptimeRowKey) setRow(uptimeRowKey, { status: 'Failed', kind: 'failed', details: ev.error });
+      renderCounts();
+      break;
+    default:
+      break;
+  }
+}
+
+function renderUptime(result) {
+  const panel = $('uptime-panel');
+  const list = $('uptime-rows');
+  if (!result || !result.sites || !result.sites.length) {
+    panel.hidden = true;
+    return;
+  }
+  const sites = [...result.sites].map((s) => ({ ...s, siteName: s.siteName || siteLabel(s.siteId) }));
+  sites.sort((a, b) => {
+    const rank = (s) => (s.status === 'down' ? 0 : s.failures > 0 ? 1 : s.status === 'up' ? 2 : 3);
+    return rank(a) - rank(b) || a.siteName.localeCompare(b.siteName);
+  });
+  const down = sites.filter((s) => s.status === 'down').length;
+  const up = sites.filter((s) => s.status === 'up').length;
+  $('uptime-title').textContent = down ? `${plural(down, 'site')} down · ${up} up` : `All ${plural(up, 'site')} up`;
+  const when = result.at ? new Date(result.at).toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' }) : '';
+  const every = state.config.uptimeEveryMinutes;
+  $('uptime-meta').textContent = `Last check ${when}${every ? ` · checking every ${every === 1 ? 'minute' : `${every} minutes`}` : ' · automatic checks are off'}`;
+
+  list.replaceChildren();
+  for (const s of sites) {
+    const row = document.createElement('div');
+    row.className = 'uptime-row';
+    const name = document.createElement('span');
+    name.className = 'site-name';
+    name.textContent = s.siteName;
+    name.title = s.url || '';
+    const kind = s.status === 'down' ? 'down' : s.failures > 0 ? 'degraded' : s.status === 'up' ? 'up' : '';
+    const label = s.status === 'down' ? 'Down' : s.failures > 0 ? `Failing (${s.failures})` : s.status === 'up' ? 'Up' : 'Unknown';
+    const detail = document.createElement('span');
+    detail.className = 'muted';
+    const lr = s.lastResult || {};
+    detail.textContent = lr.error ? lr.error : lr.status ? `HTTP ${lr.status} · ${lr.latencyMs} ms` : '';
+    const since = document.createElement('span');
+    since.className = 'muted';
+    since.textContent = s.since ? `${s.status === 'down' ? 'down' : 'up'} since ${new Date(s.since).toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })}` : '';
+    const cert = document.createElement('span');
+    if (s.tls && s.tls.daysLeft !== null && s.tls.daysLeft !== undefined) {
+      cert.textContent = s.tls.daysLeft < 0 ? 'cert expired' : `cert ${s.tls.daysLeft} d`;
+      cert.className = s.tls.daysLeft < 0 || !s.tls.authorized ? 'bad' : s.tls.daysLeft <= 14 ? 'warn' : 'muted';
+      cert.title = [s.tls.validTo ? `valid until ${new Date(s.tls.validTo).toLocaleDateString()}` : null, s.tls.issuer, s.tls.authorizationError].filter(Boolean).join(' · ');
+    } else if (s.tls && s.tls.lastError) {
+      cert.textContent = 'cert ?';
+      cert.className = 'muted';
+      cert.title = s.tls.lastError;
+    } else {
+      cert.className = 'muted';
+    }
+    row.append(name, pill(label, kind), detail, since, cert);
+    if (s.php && (s.php.count24h || s.php.lastError)) {
+      const sub = document.createElement('span');
+      sub.className = 'uptime-sub';
+      sub.textContent = s.php.lastError
+        ? `PHP log could not be read: ${s.php.lastError}`
+        : `${plural(s.php.count24h, 'PHP fatal error')} in the last 24 h (${plural(s.php.distinct24h, 'distinct')})${s.php.latest ? ` · latest: ${s.php.latest.sample.slice(0, 140)}${s.php.latest.component ? ` (${s.php.latest.component})` : ''}` : ''}`;
+      row.append(sub);
+    }
+    list.append(row);
+  }
+  panel.hidden = false;
+}
+
+async function saveUptimeSettings() {
+  const statusEl = $('uptime-status');
+  const url = $('uptime-webhook-url').value.trim();
+  if (url && !/^https:\/\//.test(url)) {
+    statusEl.className = 'status bad';
+    statusEl.textContent = 'The webhook URL needs to start with https://';
+    return;
+  }
+  state.config = await api.config.set({ uptimeWebhookUrl: url, uptimeFailuresToAlert: Number($('uptime-failures').value) || 2 });
+  writeUptimeForm(state.config);
+  if (state.lastUptime) renderUptime(state.lastUptime);
+  statusEl.className = 'status ok';
+  statusEl.textContent = 'Saved.';
+}
+
+async function testUptimeWebhook() {
+  const statusEl = $('uptime-status');
+  const url = $('uptime-webhook-url').value.trim();
+  statusEl.className = 'status';
+  statusEl.textContent = 'Sending…';
+  try {
+    const { kind } = await api.security.testWebhook(url);
+    statusEl.className = 'status ok';
+    statusEl.textContent = `Test message delivered to ${kind === 'slack' ? 'Slack' : kind === 'discord' ? 'Discord' : 'your webhook'}.`;
+  } catch (err) {
+    statusEl.className = 'status bad';
+    statusEl.textContent = err.message;
+  }
+}
+
+// ---------- Config check ----------
+
+let configRowKey = null;
+
+async function startConfigCheck(scope, siteId) {
+  const deep = $('config-deep').checked && !$('config-deep').disabled;
+  try {
+    state.checkingConfig = true;
+    $('progress').hidden = false;
+    setProgress(0, 1, 'Starting…');
+    renderCounts();
+    const { siteCount } = await api.config_check.check({ scope, siteId, deep });
+    const body = logTableBody(`${timeNow()} · ${scope === 'single' ? siteLabel(siteId) : scope === 'list' ? `${plural(siteCount, 'site')} from your list` : `${plural(siteCount, 'live site')}`} · config check${deep ? ' (deep)' : ''}`);
+    configRowKey = `config:${Date.now()}`;
+    const tr = addRow(body, configRowKey, null, { kind: 'config' });
+    tr.cells[0].textContent = scope === 'single' ? siteLabel(siteId) : scope === 'list' ? 'Your list' : 'All live sites';
+    setRow(configRowKey, { status: 'Working', kind: 'working', details: '' });
+  } catch (err) {
+    state.checkingConfig = false;
+    $('progress').hidden = true;
+    renderCounts();
+    appendNoteRow(logTableBody(`${timeNow()} · Could not start`), err.message);
+  }
+}
+
+function handleConfigEvent(ev) {
+  switch (ev.kind) {
+    case 'started':
+      setProgress(0, ev.total, `Checking 0 of ${ev.total} sites`);
+      break;
+    case 'site':
+      setProgress(ev.index, ev.total, `Checked ${ev.index} of ${ev.total} · ${ev.siteName}: ${ev.worst === 'ok' ? 'fine' : ev.worst}`);
+      break;
+    case 'finished': {
+      state.checkingConfig = false;
+      const r = ev.result;
+      state.lastConfig = r;
+      const bad = r.sites.filter((s) => s.worst === 'high' || s.worst === 'medium');
+      const deepSent = r.sites.filter((s) => s.deep && s.deep.requested).length;
+      const parts = [bad.length ? `${plural(bad.length, 'site')} with issues: ${bad.map((s) => s.siteName).join(', ')}` : `${r.checked} sites look consistent`];
+      if (r.deep) parts.push(deepSent ? `wp-config reports requested from ${deepSent}, arriving in your channel` : 'deep reports could not be requested');
+      setRow(configRowKey, { status: bad.length ? `${bad.length} with issues` : 'Consistent', kind: bad.length ? 'failed' : 'done', details: parts.join(' · ') });
+      $('progress-fill').style.width = '100%';
+      $('progress-text').textContent = `Finished · ${parts.join(' · ')}`;
+      renderConfig(r);
+      renderCounts();
+      break;
+    }
+    case 'error':
+      state.checkingConfig = false;
+      if (configRowKey) setRow(configRowKey, { status: 'Failed', kind: 'failed', details: ev.error });
+      renderCounts();
+      break;
+    default:
+      break;
+  }
+}
+
+const SEV_LABEL = { high: 'Issue', medium: 'Check', low: 'Note', info: 'Info', ok: 'OK' };
+
+function renderConfig(result) {
+  const panel = $('config-panel');
+  const list = $('config-rows');
+  if (!result || !result.sites || !result.sites.length) {
+    panel.hidden = true;
+    return;
+  }
+  const bad = result.sites.filter((s) => s.worst === 'high' || s.worst === 'medium').length;
+  $('config-title').textContent = bad ? `${plural(bad, 'site')} with configuration issues` : `${plural(result.checked, 'site')} consistent with Pressable`;
+  const when = new Date(result.at).toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' });
+  $('config-meta').textContent = `Checked ${when}${result.deep ? ' · deep reports sent to your channel' : ''}`;
+  list.replaceChildren();
+  for (const s of result.sites) {
+    const group = document.createElement('div');
+    group.className = 'site-group';
+    const head = document.createElement('div');
+    head.className = 'site-group-head';
+    const h4 = document.createElement('h4');
+    h4.textContent = s.siteName;
+    const meta = document.createElement('span');
+    meta.textContent = [s.url, s.staging ? 'staging' : s.sandbox ? 'sandbox' : 'production', s.facts.phpVersion ? `PHP ${s.facts.phpVersion}` : null].filter(Boolean).join(' · ');
+    head.append(h4, pill(SEV_LABEL[s.worst] || s.worst, `sev-${s.worst}`), meta);
+    group.append(head);
+
+    if (s.findings.length) {
+      const ul = document.createElement('ul');
+      ul.className = 'config-findings';
+      for (const f of s.findings) {
+        const li = document.createElement('li');
+        li.className = `f-${f.severity}`;
+        li.textContent = f.message;
+        ul.append(li);
+      }
+      group.append(ul);
+    }
+
+    const f = s.facts;
+    const dl = document.createElement('dl');
+    dl.className = 'config-facts';
+    const facts = [
+      ['Pressable address', f.pressableUrl],
+      ['Homepage ends at', f.homepage && f.homepage.ok ? `${f.homepage.finalUrl} (HTTP ${f.homepage.status})` : (f.homepage && f.homepage.error) || null],
+      ['WordPress home', f.rest && f.rest.ok ? f.rest.home : null],
+      ['WordPress siteurl', f.rest && f.rest.ok ? f.rest.siteurl : null],
+      ['Canonical', f.homepage && f.homepage.canonical],
+      ['Robots', f.homepage && (f.homepage.robotsMeta || f.homepage.xRobotsTag) ? [f.homepage.robotsMeta, f.homepage.xRobotsTag].filter(Boolean).join(' · ') : null],
+      ['Generator', f.homepage && f.homepage.generator],
+      ['Title', f.homepage && f.homepage.title],
+    ].filter(([, v]) => v);
+    for (const [k, v] of facts) {
+      const dt = document.createElement('dt');
+      dt.textContent = k;
+      const dd = document.createElement('dd');
+      dd.textContent = v;
+      dl.append(dt, dd);
+    }
+    if (s.deep && s.deep.error) {
+      const dt = document.createElement('dt');
+      dt.textContent = 'Deep check';
+      const dd = document.createElement('dd');
+      dd.textContent = s.deep.error;
+      dl.append(dt, dd);
+    }
+    group.append(dl);
+    list.append(group);
+  }
+  panel.hidden = false;
+}
+
 // ---------- Settings ----------
 
 async function refreshCredentialStatus() {
@@ -950,7 +1638,64 @@ function openSettings(message, kind) {
   $('nvd-key').value = state.config.nvdApiKey || '';
   $('alerts-status').textContent = '';
   $('alerts-status').className = 'status';
+  $('user-webhook-url').value = state.config.userWebhookUrl || '';
+  $('watched-roles').value = state.config.watchedRoles || 'administrator';
+  $('users-status').textContent = '';
+  $('users-status').className = 'status';
+  $('uptime-webhook-url').value = state.config.uptimeWebhookUrl || '';
+  $('uptime-failures').value = String(state.config.uptimeFailuresToAlert || 2);
+  $('uptime-status').textContent = '';
+  $('uptime-status').className = 'status';
+  $('audit-every').value = String(state.config.auditEveryHours || 0);
+  $('backup-at').value = state.config.backupListAt || '';
+  $('schedule-status').textContent = '';
+  $('schedule-status').className = 'status';
   if (!$('settings').open) $('settings').showModal();
+}
+
+async function saveSchedule() {
+  const statusEl = $('schedule-status');
+  const backupAt = $('backup-at').value.trim();
+  if (backupAt && !/^\d{2}:\d{2}$/.test(backupAt)) {
+    statusEl.className = 'status bad';
+    statusEl.textContent = 'Use a time like 02:30.';
+    return;
+  }
+  state.config = await api.config.set({ auditEveryHours: Number($('audit-every').value) || 0, backupListAt: backupAt });
+  statusEl.className = 'status ok';
+  statusEl.textContent = 'Saved.';
+}
+
+async function saveUserAlertSettings() {
+  const statusEl = $('users-status');
+  const url = $('user-webhook-url').value.trim();
+  if (url && !/^https:\/\//.test(url)) {
+    statusEl.className = 'status bad';
+    statusEl.textContent = 'The webhook URL needs to start with https://';
+    return;
+  }
+  const roles = $('watched-roles').value.trim() || 'administrator';
+  state.config = await api.config.set({ userWebhookUrl: url, watchedRoles: roles });
+  writeSecurityForm(state.config);
+  statusEl.className = 'status ok';
+  statusEl.textContent = url
+    ? 'Saved. Run "Install sentinel" on the Users tab to push the webhook to your sites.'
+    : 'Saved.';
+}
+
+async function testUserWebhook() {
+  const statusEl = $('users-status');
+  const url = $('user-webhook-url').value.trim();
+  statusEl.className = 'status';
+  statusEl.textContent = 'Sending…';
+  try {
+    const { kind } = await api.security.testWebhook(url);
+    statusEl.className = 'status ok';
+    statusEl.textContent = `Test message delivered to ${kind === 'slack' ? 'Slack' : kind === 'discord' ? 'Discord' : 'your webhook'}.`;
+  } catch (err) {
+    statusEl.className = 'status bad';
+    statusEl.textContent = err.message;
+  }
 }
 
 async function saveAlertSettings() {
@@ -967,6 +1712,7 @@ async function saveAlertSettings() {
     nvdApiKey: $('nvd-key').value.trim(),
   });
   writeSecurityForm(state.config);
+  writeConfigForm(state.config);
   if (state.lastScan) renderFindings(state.lastScan);
   statusEl.className = 'status ok';
   statusEl.textContent = url ? 'Saved. New findings will be posted to your channel after each check.' : 'Saved.';
@@ -1072,6 +1818,7 @@ function wire() {
   for (const id of ['security-all', 'security-list', 'security-notify']) {
     $(id).addEventListener('change', async () => {
       state.config = await api.config.set(readSecurityForm());
+      writeSecurityForm(state.config);
       renderCounts();
     });
   }
@@ -1082,11 +1829,48 @@ function wire() {
   $('btn-test-webhook').addEventListener('click', testWebhook);
   api.security.onEvent(handleScanEvent);
 
+  for (const id of ['users-all', 'users-list', 'users-notify']) {
+    $(id).addEventListener('change', async () => {
+      state.config = await api.config.set(readUsersForm());
+      writeSecurityForm(state.config);
+      renderCounts();
+    });
+  }
+  $('btn-sentinel').addEventListener('click', startSentinelInstall);
+  $('btn-hide-admins').addEventListener('click', () => { $('admins').hidden = true; });
+  $('btn-save-users').addEventListener('click', saveUserAlertSettings);
+  $('btn-save-schedule').addEventListener('click', saveSchedule);
+  for (const id of ['uptime-live', 'uptime-list', 'uptime-staging', 'uptime-every', 'php-every']) {
+    $(id).addEventListener('change', async () => {
+      state.config = await api.config.set(readUptimeForm());
+      writeUptimeForm(state.config);
+      renderCounts();
+      if (state.lastUptime) renderUptime(state.lastUptime);
+    });
+  }
+  $('btn-hide-uptime').addEventListener('click', () => { $('uptime-panel').hidden = true; });
+  for (const id of ['config-all', 'config-list', 'config-deep']) {
+    $(id).addEventListener('change', async () => {
+      state.config = await api.config.set(readConfigForm());
+      writeConfigForm(state.config);
+      renderCounts();
+    });
+  }
+  $('btn-hide-config').addEventListener('click', () => { $('config-panel').hidden = true; });
+  api.config_check.onEvent(handleConfigEvent);
+  $('btn-save-uptime').addEventListener('click', saveUptimeSettings);
+  $('btn-test-uptime-webhook').addEventListener('click', testUptimeWebhook);
+  api.uptime.onEvent(handleUptimeEvent);
+  $('btn-test-user-webhook').addEventListener('click', testUserWebhook);
+  api.users.onEvent(handleAuditEvent);
+  api.sentinel.onEvent(handleSentinelEvent);
+
   $('run-list').addEventListener('click', () => startRun('list'));
   $('run-single').addEventListener('click', () => startRun('single'));
   $('btn-cancel').addEventListener('click', async () => {
     $('btn-cancel').disabled = true;
     if (state.scanning) await api.security.cancel();
+    if (state.auditing) await api.users.cancel();
     if (state.running) await api.run.cancel();
     $('progress-text').textContent = 'Cancelling after the current step…';
     $('btn-cancel').disabled = false;
@@ -1118,6 +1902,8 @@ async function init() {
   state.config = await api.config.get();
   writeTaskForm(state.config.task);
   writeSecurityForm(state.config);
+  writeUptimeForm(state.config);
+  writeConfigForm(state.config);
   renderSites();
 
   const creds = await refreshCredentialStatus();
@@ -1135,6 +1921,34 @@ async function init() {
     }
   } catch {
     // No earlier check; nothing to show.
+  }
+  try {
+    const lastAudit = await api.users.lastResult();
+    if (lastAudit && lastAudit.sites && lastAudit.sites.length) {
+      state.lastAudit = lastAudit;
+      renderAdmins(lastAudit);
+    }
+  } catch {
+    // No earlier audit.
+  }
+  refreshSentinelStatus();
+  try {
+    const lastCfg = await api.config_check.lastResult();
+    if (lastCfg && lastCfg.sites && lastCfg.sites.length) {
+      state.lastConfig = lastCfg;
+      renderConfig(lastCfg);
+    }
+  } catch {
+    // No config check yet.
+  }
+  try {
+    const lastUp = await api.uptime.lastResult();
+    if (lastUp && lastUp.sites && lastUp.sites.length) {
+      state.lastUptime = lastUp;
+      renderUptime(lastUp);
+    }
+  } catch {
+    // No uptime data yet.
   }
 }
 
