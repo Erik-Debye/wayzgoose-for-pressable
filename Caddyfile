@@ -1,0 +1,12 @@
+# Caddy fetches and renews a Let's Encrypt certificate for this domain on its
+# own. The domain's A/AAAA record must point at this server before starting.
+{$WAYZGOOSE_DOMAIN} {
+	encode gzip
+	reverse_proxy wayzgoose:8080 {
+		flush_interval -1
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+}

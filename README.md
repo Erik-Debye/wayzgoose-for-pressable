@@ -9,6 +9,7 @@ A small Electron desktop app (macOS and Windows 11) for routine operations on yo
 - **Clear cache** – purge the edge cache and/or flush the object cache.
 - **Cache preload** – turn Pressable's crawl-and-warm feature on or off.
 - **Security** – check every plugin and theme for known vulnerabilities, grouped by vulnerability with every affected site, enriched with the CVE's severity and the access an attacker needs, and posted to a Slack or Discord webhook.
+- **Users** – audit which accounts hold administrator (or any watched) roles on every site and alert on new, promoted or removed ones; plus a one-click sentinel mu-plugin that reports role changes the instant they happen, with who did it.
 
 The site list is built by ticking sites in the sidebar and is saved between launches. This is an independent tool built on Pressable's public API; it isn't made or endorsed by Pressable or Automattic.
 
@@ -47,6 +48,47 @@ Without code-signing certificates the installers work, but each OS warns once:
 
 To remove the warnings, add signing secrets in the repository's **Settings → Secrets and variables → Actions**: for macOS, `CSC_LINK` (base64 of a Developer ID Application `.p12`), `CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` (Apple Developer Program, US$99/year); for Windows, `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` from a code-signing certificate. The workflow picks them up automatically and notarizes the Mac build.
 
+## Self-hosting (runs around the clock)
+
+The desktop app only checks while it's open. The same code also runs as a small server with the dashboard served as a web page, so the daily vulnerability check, the user audit and a nightly backup of your list happen on their own. It ships as a Docker image with Caddy in front for automatic HTTPS.
+
+**You need:** a Linux VPS (1 vCPU / 512 MB is plenty), Docker, and a domain or subdomain whose DNS A record points at the server.
+
+```bash
+# 1. Docker, if the server doesn't have it (Ubuntu/Debian)
+curl -fsSL https://get.docker.com | sh
+
+# 2. The code
+git clone https://github.com/Erik-Debye/wayzgoose-for-pressable.git
+cd wayzgoose-for-pressable
+
+# 3. Settings: three values are required
+cp .env.example .env
+openssl rand -hex 32        # paste the output as WAYZGOOSE_SECRET_KEY
+nano .env                   # WAYZGOOSE_DOMAIN, WAYZGOOSE_PASSWORD, WAYZGOOSE_SECRET_KEY
+
+# 4. Up
+docker compose up -d
+```
+
+Open `https://your-domain`, sign in with the password, and enter your Pressable client ID and secret in Settings (or put them in `.env` as `PRESSABLE_CLIENT_ID` / `PRESSABLE_CLIENT_SECRET`). Everything else works exactly as in the desktop app; the **Schedule** section in Settings sets the audit interval and the nightly backup time.
+
+Updating: `git pull && docker compose up -d --build`. Logs: `docker compose logs -f wayzgoose`. Data (config, results, encrypted credentials, `runs.log`) lives in the `wayzgoose-data` volume.
+
+### How it's locked down
+
+- Only Caddy is reachable from the internet, on 80 and 443; the app container has no published ports.
+- Caddy fetches and renews a Let's Encrypt certificate itself and sets HSTS.
+- Password sign-in with a 12-character minimum, constant-time comparison, five attempts per 15 minutes per IP, sessions in HttpOnly SameSite=Strict cookies that expire after 12 hours.
+- Every API call needs both the session cookie and a custom header, so a cross-site page can't trigger actions.
+- A strict Content Security Policy (same-origin scripts and styles only), no framing, no referrers.
+- The Pressable secret is encrypted at rest with AES-256-GCM using `WAYZGOOSE_SECRET_KEY`; the key is the one thing to back up.
+- The app container runs as an unprivileged user on a read-only filesystem with all capabilities dropped.
+
+Optional: `WAYZGOOSE_API_TOKEN` lets scripts call `/api/<action>` with a bearer token (for example `curl -X POST https://your-domain/api/security:scan -H "Authorization: Bearer …" -d '{"payload":{"scope":"all"}}'`).
+
+**Private network instead of a public domain?** If the server is on Tailscale or behind a VPN, drop the `caddy` service, publish port 8080 on the Tailscale address only, and set `WAYZGOOSE_INSECURE_COOKIE=1` (the cookie loses its Secure flag because there's no TLS). Don't do that on a public interface.
+
 ## Run, test or build locally (optional)
 
 ```bash
@@ -75,6 +117,12 @@ Build each platform on that platform: macOS builds need a Mac. `CLAUDE.md` descr
 | Flush object cache | `POST /v1/sites/{id}/flush-object-cache` (see note below) |
 | Cache preload status | `GET /v1/sites/{id}/cache-preload` |
 | Plugin / theme vulnerability alerts | `GET /v1/sites/{id}/security-alerts/plugins` and `/themes` |
+| WordPress users on a site | `GET /v1/sites/{id}/wordpress/users` (paginated) |
+| Run WP-CLI on a site | `POST /v1/sites/{id}/wordpress/wpcli` with `{ "commands": [...] }` |
+| Web server log (7 days, 200 per page) | `GET /v1/sites/{id}/logs/webserver` with `request_type`, `status`, `user_ip`, `scroll_id` |
+| Site activity log (30 days) | `POST /v1/sites/{id}/logs/activity` with `{ page, per_page }` |
+| Session check on a site | `POST /v1/sites/{id}/wordpress/wpcli` with `eval '…'` built from `scripts/session-check.php` |
+| Account-wide mu-plugins | `GET/POST /v1/mu-plugins`, `PUT /v1/mu-plugins/{id}` with `{ path, existing_sites, future_sites }` |
 | Turn cache preload on/off | `PUT /v1/sites/{id}/cache-preload` with `{"enabled": true|false}` |
 
 Access tokens last an hour; the client refreshes a minute early and retries once on a 401. On a 429 it waits for `Retry-After` and retries. Sites are processed one after another with a short pause between them.
@@ -104,6 +152,27 @@ Rate limits: cve.org has no published limit and the app spaces lookups 300 ms ap
 
 Note: the exact JSON wrapper around Pressable's alert objects isn't shown in the docs, so `extractVulnerabilities()` in `src/security.js` walks the response and treats anything WPScan-shaped (`fixed_in`, `vuln_type`, `references`…) as a vulnerability. The raw response for any site with findings is written to `runs.log`.
 
+## Privileged-user alerts
+
+Two layers, sharing one webhook (Settings → *User privilege alerts*), kept separate from the vulnerability channel so role changes stand out. The first layer needs nothing on your sites; the second is optional.
+
+**Audit, through the Pressable API only.** The Users tab lists each site's WordPress users, keeps the ones holding a watched role (default `administrator`; editable in Settings) and compares them with the previous audit stored in `admins.json`. New accounts, role changes and removals are shown in the panel and posted to the channel, one message per change. The first audit of a site records a baseline silently. The audit runs with the daily check if that's enabled.
+
+When a change is found, the audit also pulls two of Pressable's logs for the window since the previous audit and attaches what it finds to the alert:
+
+- the **web server log**, filtered to write requests (POST/PUT/PATCH/DELETE) against user-management endpoints (`user-new.php`, `user-edit.php`, `users.php`, `profile.php`, `/wp-json/wp/v2/users`, `xmlrpc.php`, `admin-ajax.php`), each with its time, status, IP and browser;
+- the **site activity log**, which names the Pressable account behind any WP-CLI run, phpMyAdmin session or restore in that window.
+
+That answers *how* and *from where*. For *which WordPress user*, the audit then sends a **session check** to the site: a one-off WP-CLI job (`scripts/session-check.php`, run through `wp eval`) that needs no plugin. WordPress core already records, for every logged-in session, the IP, user agent and login time, and for every application password its last-used time and IP. The script takes every user able to change roles (`promote_users`, `create_users`, `edit_users`, `delete_users`), finds their sessions and application-password uses overlapping the window, marks the ones whose IP matches a request from the web server log, and posts the candidates to the same channel, directly from the site. Because Pressable runs WP-CLI through a job queue, that message arrives a little after the audit alert. Where two admins share an IP you get both names and the user agents to tell them apart; a change with no candidate session at all points at WP-CLI, cron or a database edit.
+
+Limits: the web server log keeps 7 days or 10,000 entries, whichever runs out first, so on a busy site the request evidence can scroll away within hours of a daily audit (audit more often if that matters); sessions expire after 48 hours, or 14 days with "Remember Me", so the session check is most useful when the audit runs at least daily; and a change made straight in the database leaves neither a request nor a session. When the logs show nothing, the alert says so rather than guessing.
+
+One thing to know: Pressable stores WP-CLI commands in plain text in the site's activity log, so the webhook URL passes through there (the same is true of the sentinel's `wp config set`). A Discord webhook URL only allows posting to that channel; if it ever leaks, delete it in Discord and paste a new one into Settings.
+
+**Sentinel, on the sites (optional).** For the WordPress username and an alert at the moment it happens, `mu-plugin/wayzgoose-sentinel.php` is a small must-use plugin. *Install sentinel* on the Users tab registers it through Pressable's account-wide mu-plugin API, pointing at the copy in this repository (`raw.githubusercontent.com/<owner>/<repo>/main/mu-plugin/wayzgoose-sentinel.php`), with *existing sites* and *future sites* both on. It then writes the webhook URL and watched roles into each site's `wp-config.php` as constants through WP-CLI (falling back to options if wp-config isn't writable) and fires the plugin's test hook so each site confirms itself in the channel. From then on, the moment a user is created with, promoted to, demoted from, or deleted while holding a watched role, the site posts the account, its registration date, a link to its edit screen, and the actor: the logged-in user, how (wp-admin, REST API, WP-CLI, cron, XML-RPC), their IP and user agent. A change with no logged-in user is flagged for investigation. Super-admin grants on multisite are covered too.
+
+Because mu-plugins can't be disabled from wp-admin, an attacker who gains an administrator account can't switch the sentinel off without file access. Push the repository before installing (Pressable fetches the file from GitHub), and re-run *Install sentinel* after changing the webhook or roles, or after adding sites by hand. Registering mu-plugins may need an extra scope on your API application; the activity row shows the API's message if so.
+
 ## How completion is tracked
 
 Creating a backup is asynchronous on Pressable's side: the API accepts the request and the backup finishes later. Pressable offers a webhook for this, but a desktop app has nowhere to receive one, so the app polls instead:
@@ -123,20 +192,31 @@ Settings and credentials are in the app's user-data folder (Settings → *Open d
 - `credentials.bin` – encrypted client ID and secret
 - `runs.log` – one JSON line per operation, including raw API responses, handy if anything looks off
 - `last-findings.json`, `seen-findings.json`, `cve-cache.json` – the last vulnerability check, what has been reported to your webhook, and cached CVE records
+- `admins.json`, `last-audit.json` – privileged users per site from the last audit, and its full result
 
 ## Project layout
 
 ```
 src/
-  main.js              Electron main process: window, storage, IPC, task run engine
+  core/engine.js       Everything the app does, independent of host: config, task runs, vulnerability checks,
+                       user audit, sentinel, scheduler. One handler per action, used by both hosts below
+  main.js              Electron host: window, OS-keychain credentials, IPC → engine, auto-update
   pressable.js         API client (auth, retries, sites, backups, edge cache, cache preload, security alerts)
   security.js          Vulnerability findings: normalize alerts, CVE enrichment, CVSS wording, webhook messages
+  users.js             Privileged-user audit: normalize users, diff snapshots, sentinel WP-CLI commands, alerts
+scripts/
+  session-check.php    Sent to a site via wp eval after a change: which role-capable users were logged in, and from where
+mu-plugin/
+  wayzgoose-sentinel.php  Must-use plugin installed on every site; posts role-change alerts with the actor
   preload.js           The only bridge the UI can use (contextBridge)
+  server/server.js     Self-hosted host: sign-in, sessions, HTTP routes → engine, SSE events, static dashboard
+  server/bridge.js     Browser stand-in for preload: window.pressable over fetch + EventSource
   renderer/
     index.html
     styles.css         Follows the OS light/dark theme
     renderer.js        Site list, task switcher, list/single-site modes, findings panel, activity table, polling
-test/                  node:test suites (client, security module, headless main-process run)
+test/                  node:test suites (client, security, users, headless main-process run, server)
+Dockerfile, docker-compose.yml, Caddyfile, .env.example   Self-hosting
 CLAUDE.md              Project notes for coding agents
 ```
 

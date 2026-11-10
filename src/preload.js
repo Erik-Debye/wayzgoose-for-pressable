@@ -42,6 +42,25 @@ contextBridge.exposeInMainWorld('pressable', {
       return () => ipcRenderer.removeListener('scan:event', handler);
     },
   },
+  users: {
+    audit: (options) => ipcRenderer.invoke('users:audit', options),
+    cancel: () => ipcRenderer.invoke('users:cancel'),
+    lastResult: () => ipcRenderer.invoke('users:lastResult'),
+    onEvent: (callback) => {
+      const handler = (_event, payload) => callback(payload);
+      ipcRenderer.on('audit:event', handler);
+      return () => ipcRenderer.removeListener('audit:event', handler);
+    },
+  },
+  sentinel: {
+    install: (options) => ipcRenderer.invoke('sentinel:install', options),
+    status: () => ipcRenderer.invoke('sentinel:status'),
+    onEvent: (callback) => {
+      const handler = (_event, payload) => callback(payload);
+      ipcRenderer.on('sentinel:event', handler);
+      return () => ipcRenderer.removeListener('sentinel:event', handler);
+    },
+  },
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   openDataFolder: () => ipcRenderer.invoke('shell:openDataFolder'),
 });

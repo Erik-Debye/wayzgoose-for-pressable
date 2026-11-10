@@ -36,6 +36,7 @@
           <button type="button" class="seg" data-task="cache" role="radio" aria-checked="false">Clear cache</button>
           <button type="button" class="seg" data-task="preload" role="radio" aria-checked="false">Cache preload</button>
           <button type="button" class="seg" data-task="security" role="radio" aria-checked="false">Security</button>
+          <button type="button" class="seg" data-task="users" role="radio" aria-checked="false">Users</button>
         </div>
 
         <div class="task-options" id="opts-backup">
@@ -55,6 +56,17 @@
           <label><input type="radio" name="security-scope" id="security-list" value="list"> Only my list</label>
           <label class="opt-secondary"><input type="checkbox" id="security-notify"> Send new findings to Slack/Discord <span id="security-notify-hint"></span></label>
           <p class="note">Checks every plugin and theme against WPScan’s vulnerability data (the same data behind MyPressable’s Security Alerts), then looks each CVE up for its severity and the access an attacker needs. Pressable refreshes this data daily, so once a day is plenty.</p>
+        </div>
+
+        <div class="task-options" id="opts-users" hidden>
+          <label><input type="radio" name="users-scope" id="users-all" value="all" checked> All sites on the account</label>
+          <label><input type="radio" name="users-scope" id="users-list" value="list"> Only my list</label>
+          <label class="opt-secondary"><input type="checkbox" id="users-notify"> Send changes to the user-alerts channel <span id="users-notify-hint"></span></label>
+          <p class="note">Lists every site’s WordPress users and keeps the ones holding a watched role (<span id="users-roles-label">administrator</span>). Each check is compared with the last one, so new, promoted and removed accounts are reported, together with the web server requests and Pressable actions that could have made the change (how and from where). The first check of a site records a baseline. For instant alerts that also name the WordPress user, install the optional sentinel below.</p>
+          <div class="sentinel">
+            <span id="sentinel-status">Sentinel: checking…</span>
+            <button class="btn btn-small" id="btn-sentinel" type="button">Install sentinel on these sites</button>
+          </div>
         </div>
 
         <div class="task-options" id="opts-preload" hidden>
@@ -101,6 +113,20 @@
         </div>
         <p class="findings-note" id="findings-note" hidden></p>
         <div class="findings-list" id="findings-list"></div>
+      </section>
+
+      <section class="findings" id="admins" hidden>
+        <div class="findings-head">
+          <div>
+            <h3 id="admins-title">Privileged users</h3>
+            <p class="findings-meta" id="admins-meta"></p>
+          </div>
+          <div class="log-tools">
+            <button class="btn btn-small btn-quiet" id="btn-hide-admins" type="button">Hide</button>
+          </div>
+        </div>
+        <p class="findings-note" id="admins-note" hidden></p>
+        <div class="findings-list" id="admins-list"></div>
       </section>
 
       <div class="log">
@@ -165,6 +191,48 @@
         <button class="btn btn-quiet" id="btn-test-webhook" type="button">Send test message</button>
         <span class="spacer"></span>
         <button class="btn" id="btn-save-alerts" type="button">Save alert settings</button>
+      </div>
+
+      <h2 class="settings-sub">User privilege alerts</h2>
+      <p class="help">A second webhook, kept separate so role changes stand out. Used by the audit in this app and by the sentinel mu-plugin on your sites.</p>
+      <label class="field">
+        <span>Webhook URL</span>
+        <input class="input" id="user-webhook-url" type="url" placeholder="https://discord.com/api/webhooks/… or https://hooks.slack.com/services/…" autocomplete="off" spellcheck="false">
+      </label>
+      <label class="field">
+        <span>Roles to watch (comma-separated)</span>
+        <input class="input" id="watched-roles" type="text" placeholder="administrator" autocomplete="off" spellcheck="false">
+      </label>
+      <p class="status" id="users-status" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" id="btn-test-user-webhook" type="button">Send test message</button>
+        <span class="spacer"></span>
+        <button class="btn" id="btn-save-users" type="button">Save user alert settings</button>
+      </div>
+
+      <h2 class="settings-sub">Schedule</h2>
+      <p class="help">Runs while the desktop app is open, or around the clock on a self-hosted server.</p>
+      <div class="schedule-grid">
+        <label class="field">
+          <span>User audit every</span>
+          <select class="input" id="audit-every">
+            <option value="0">only with the daily check</option>
+            <option value="1">hour</option>
+            <option value="3">3 hours</option>
+            <option value="6">6 hours</option>
+            <option value="12">12 hours</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Back up your list daily at</span>
+          <input class="input" id="backup-at" type="time" step="60">
+        </label>
+      </div>
+      <p class="help">Leave the backup time empty to disable it. The daily vulnerability check is the checkbox above.</p>
+      <p class="status" id="schedule-status" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <span class="spacer"></span>
+        <button class="btn" id="btn-save-schedule" type="button">Save schedule</button>
       </div>
 
       <div class="dialog-actions dialog-footer">

@@ -7,8 +7,10 @@ Electron desktop app (macOS, Windows) for routine work on Pressable-hosted WordP
 ```bash
 npm install        # downloads Electron (~100 MB); needed for npm start and dist
 npm test           # unit + integration tests, no Electron binary needed
-npm start          # run from source
+npm start          # run the desktop app from source
+npm run serve      # run the self-hosted server (needs WAYZGOOSE_PASSWORD, WAYZGOOSE_DATA_DIR)
 npm run dist:mac   # local installer builds (CI normally does this)
+docker compose up -d   # self-hosted with Caddy (see README "Self-hosting")
 ```
 
 Releases: push a tag `v<version>` (`git tag v0.2.0 && git push origin v0.2.0`). `.github/workflows/release.yml` stamps package.json with the tag's version, builds the installers on GitHub's Mac and Windows runners and attaches them to a release for that tag. Signing env vars are only exported when the matching secrets exist (an empty `CSC_LINK` breaks electron-builder). Installed copies auto-update from Releases via electron-updater.
@@ -16,14 +18,30 @@ Releases: push a tag `v<version>` (`git tag v0.2.0 && git push origin v0.2.0`). 
 ## Layout
 
 ```
-src/main.js             Electron main process: window, config + encrypted credentials, IPC, the task run
-                        engine (backup / cache / preload), the vulnerability scan engine, daily scheduling,
-                        webhook notify, auto-update
+src/core/engine.js      createEngine({ dataDir, credentials, emit }) → { handlers, startScheduler, ... }.
+                        All behaviour lives here: config, task runs (backup / cache / preload), vulnerability
+                        scan, user audit + forensics + session check, sentinel install, scheduler.
+                        handlers[channel](payload) mirrors the IPC channel names; both hosts delegate to it.
+src/main.js             Electron host only: window, safeStorage credentials, ipcMain → engine.handlers,
+                        shell:* handlers, auto-update
+src/server/server.js    Self-hosted host: createServer(env) → http server. Password login (rate limited),
+                        session cookies, POST /api/<channel> → engine.handlers (needs X-Wayzgoose header or
+                        bearer token), GET /api/events (SSE), static renderer + bridge, AES-256-GCM credentials
+src/server/bridge.js    window.pressable for the browser (fetch + EventSource), replaces preload.js
 src/pressable.js        API client: OAuth client-credentials token (1 h, refreshed early), 401 retry,
                         429 Retry-After, site pagination, all endpoint wrappers, normalizeBackup()
 src/security.js         Pure functions: extractVulnerabilities() (walks Pressable's alert JSON),
                         groupFindings(), CVE enrichment (cve.org, NVD fallback), CVSS → plain English,
                         new-finding tracking, Slack/Discord/generic webhook payloads, sendWebhook()
+src/users.js            Pure functions: normalizeUser(), diffPrivileged() (baseline + added/changed/removed),
+                        log forensics (normalizeLogEntry, relevantRequests, relevantActivity, forensicsLines),
+                        sentinelConfigCommands() (WP-CLI), sentinelSourceUrl(), buildAuditPayloads()
+scripts/session-check.php  PHP sent via `wp eval` (one line, single quotes forbidden, // comments stripped) after an audit change:
+                        lists role-capable users' core session tokens + application-password last_used/last_ip in the window,
+                        matches against web-log IPs, posts candidates to the user webhook. Built by buildSessionCheckCommand().
+mu-plugin/wayzgoose-sentinel.php  Must-use plugin pushed to every site via POST /mu-plugins; hooks set_user_role,
+                        add/remove_user_role, user_register, delete_user, (grant|revoke)_super_admin and posts to the
+                        webhook with actor, IP, UA, request. Reads WAYZGOOSE_SENTINEL_WEBHOOK/ROLES constants or options.
 src/preload.js          contextBridge surface (`window.pressable.*`); the only thing the renderer can call
 src/renderer/           Vanilla HTML/CSS/JS. renderer.js: site list, task switcher, run/scan lifecycle,
                         findings panel, backup-completion polling, settings dialog
@@ -46,6 +64,10 @@ Confirmed from https://my.pressable.com/documentation/api/v1:
 - `GET|PUT|DELETE /v1/sites/{id}/edge-cache` (`{ enabled }`; DELETE purges)
 - `GET|PUT /v1/sites/{id}/cache-preload` (`{ enabled }`; needs edge cache on + live site; 422 otherwise)
 - `GET /v1/sites/{id}/security-alerts/plugins` and `/themes` (WPScan data; objects have title, description, fixed_in, references)
+- `GET /v1/sites/{id}/wordpress/users` (paginated; docs show page/per_page in a body, sent as query here), `POST /v1/sites/{id}/wordpress/wpcli` `{ commands: [...] }`
+- `GET|POST /v1/mu-plugins`, `PUT /v1/mu-plugins/{id}` with `{ path, existing_sites, future_sites }` (path = raw file URL)
+- `GET /v1/sites/{id}/logs/webserver` (docs index) / `/logs/server` (docs example; client falls back on 404) with `request_type`, `status`, `user_ip`, `scroll_id`; 200 per page, 7 days / 10k entries
+- `POST /v1/sites/{id}/logs/activity` `{ page, per_page }` (30 days; entries carry description, email, ipAddress, source)
 - Responses are `{ message, data, errors?, code?, page? }`.
 
 Assumed (fix here if a real run disagrees):
@@ -53,6 +75,11 @@ Assumed (fix here if a real run disagrees):
 - `POST /v1/sites/{id}/flush-object-cache` — path from community clients; the docs list the action but not the path.
 - Field names on a backup object (`state`/`status`, `created`/`createdAt`): see `normalizeBackup()` in `src/pressable.js` and `isFinalState()`.
 - The wrapper around security-alert vulnerability objects: see `extractVulnerabilities()` / `componentFrom()` in `src/security.js`. Raw responses for sites with findings are written to `runs.log` in userData.
+- Field names on a WordPress user from `/wordpress/users` (roles may be `roles`, `role` or a capabilities object): `normalizeUser()` in `src/users.js`. If every user comes back role-less the audit flags it and logs a sample.
+- Field names on web server log entries (timestamp/path/status/user_ip/user_agent variants are handled in `normalizeLogEntry()`); on the first real audit that finds a change, compare `runs.log` `audit:forensics` counts with the UI.
+- WP-CLI through the API is a job queue with no returned output, which is why the session check posts its own result to the webhook instead of returning it.
+- Whether `wp config set` is allowed on Pressable; the sentinel installer falls back to `wp option update` and the plugin reads either.
+- Which OAuth scope `/mu-plugins` needs.
 - `GET /v1/sites` pagination params (`per_page`, `page`) mirror the collaborators endpoint; the client stops after one page if no `page` block comes back.
 
 ## Behavioural rules worth keeping
@@ -62,6 +89,9 @@ Assumed (fix here if a real run disagrees):
 - Runs are sequential per site with `delayBetweenSitesMs` between sites; one run or scan at a time.
 - Vulnerability "new" = not yet sent to the webhook, tracked per `findingKey|siteId` in `seen-findings.json`. Only successful sends mark things seen.
 - Webhook: one message per vulnerability, sites grouped by installed version, summary message first when >1, 1.2 s spacing.
+- User audit: first audit of a site is a silent baseline. When a site shows a change, `gatherForensics()` pulls POST/PUT/PATCH/DELETE web server log pages (≤10 per method, stops once older than the window) plus the activity log, and attaches `forensics` to every event for that site; alerts and the panel render it. Alerts are one message per change. Sentinel install = register mu-plugin (create or update by path match) → per site: `config set` constants, else `option update` → fire `wayzgoose_sentinel_test`.
+- Scheduler (`engine.maybeScheduled`, every 5 min, unref'd): daily vuln check (+audit) when `dailyCheck`; user audit every `auditEveryHours`; backup of the list once per day at `backupListAt` (local time, `schedule.json` remembers the day).
+- Server: `/api/*` POST requires session + `X-Wayzgoose: 1` (CSRF) or `Authorization: Bearer WAYZGOOSE_API_TOKEN`. The renderer's meta CSP is stripped and replaced by the HTTP header. Inline `style=""` is blocked by that CSP; use classes.
 - Activity rows are keyed per run (`runId:siteId:kind:type`) so repeated runs never overwrite rows.
 - UI follows the OS light/dark theme via CSS variables; `[hidden] { display: none !important }` exists because several containers set `display: flex/grid`.
 

@@ -24,6 +24,9 @@ const state = {
   statusRequest: 0,
   scanning: false,
   lastScan: null,
+  auditing: false,
+  installing: false,
+  lastAudit: null,
 };
 
 // ---------- Helpers ----------
@@ -91,6 +94,23 @@ function writeSecurityForm(cfg) {
   const hasWebhook = Boolean(cfg.webhookUrl);
   $('security-notify').disabled = !hasWebhook;
   $('security-notify-hint').textContent = hasWebhook ? '' : '(add a webhook in Settings)';
+
+  // The user audit shares the scope choice with the vulnerability check.
+  $('users-all').checked = cfg.securityScope !== 'list';
+  $('users-list').checked = cfg.securityScope === 'list';
+  $('users-notify').checked = Boolean(cfg.userAlertAutomatically);
+  const hasUserWebhook = Boolean(cfg.userWebhookUrl);
+  $('users-notify').disabled = !hasUserWebhook;
+  $('users-notify-hint').textContent = hasUserWebhook ? '' : '(add a webhook in Settings)';
+  $('users-roles-label').textContent = (cfg.watchedRoles || 'administrator').split(/[,\s]+/).filter(Boolean).join(', ');
+  $('btn-sentinel').disabled = !hasUserWebhook || state.installing;
+}
+
+function readUsersForm() {
+  return {
+    securityScope: $('users-list').checked ? 'list' : 'all',
+    userAlertAutomatically: $('users-notify').checked,
+  };
 }
 
 function writeTaskForm(t) {
@@ -108,6 +128,7 @@ function writeTaskForm(t) {
   $('opts-cache').hidden = t.kind !== 'cache';
   $('opts-preload').hidden = t.kind !== 'preload';
   $('opts-security').hidden = t.kind !== 'security';
+  $('opts-users').hidden = t.kind !== 'users';
 }
 
 // Is the task runnable as configured?
@@ -166,6 +187,19 @@ function taskCopy(t, siteCount) {
         scopeCount: count,
       };
     }
+    case 'users': {
+      const scopeList = state.config.securityScope === 'list';
+      const count = scopeList ? siteCount : state.sites.length;
+      const where = scopeList ? 'on your list' : 'on your account';
+      return {
+        listTitle: 'Audit privileged users',
+        listSummary: `Lists the privileged accounts on ${plural(count, 'site')} ${where} and reports what changed since the last audit.`,
+        listButton: `Audit ${plural(count, 'site')}`,
+        singleButton: 'Audit this site',
+        runLabel: 'user audit',
+        scopeCount: count,
+      };
+    }
     default:
       return { listTitle: '', listSummary: '', listButton: 'Run', singleButton: 'Run', runLabel: '' };
   }
@@ -179,6 +213,8 @@ function itemLabel(item) {
     case 'flush-object': return 'Flush object cache';
     case 'preload': return item.enabled ? 'Preload on' : 'Preload off';
     case 'security': return 'Vulnerability check';
+    case 'audit': return 'User audit';
+    case 'sentinel': return 'Install sentinel';
     default: return item.kind;
   }
 }
@@ -248,9 +284,10 @@ function renderCounts() {
 
   const copy = taskCopy(t, onList);
   $('list-title').textContent = copy.listTitle;
-  const primaryCount = t.kind === 'security' ? copy.scopeCount : onList;
+  const wide = t.kind === 'security' || t.kind === 'users';
+  const primaryCount = wide ? copy.scopeCount : onList;
   if (primaryCount === 0) {
-    $('list-summary').textContent = t.kind === 'security' && state.config.securityScope !== 'list'
+    $('list-summary').textContent = wide && state.config.securityScope !== 'list'
       ? 'No sites loaded yet.'
       : 'Tick sites on the left to build your list.';
   } else if (!taskReady(t)) {
@@ -260,7 +297,7 @@ function renderCounts() {
   }
   $('run-list').textContent = copy.listButton;
   $('run-single').textContent = copy.singleButton;
-  const busy = state.running || state.scanning;
+  const busy = state.running || state.scanning || state.auditing || state.installing;
   $('run-list').disabled = busy || primaryCount === 0 || !taskReady(t);
   $('run-single').disabled = busy || !$('single-site').value || !taskReady(t);
 }
@@ -295,6 +332,7 @@ async function loadSites() {
     renderSites();
     setConn(`Connected · ${plural(state.sites.length, 'site')}`, 'ok');
     loadSiteStatus();
+    refreshSentinelStatus();
   } catch (err) {
     setConn(err.message, 'bad');
     state.sites = [];
@@ -455,6 +493,10 @@ async function startRun(mode) {
   const siteId = mode === 'single' ? $('single-site').value : null;
   if (t.kind === 'security') {
     startScan(mode === 'single' ? 'single' : (state.config.securityScope === 'list' ? 'list' : 'all'), siteId);
+    return;
+  }
+  if (t.kind === 'users') {
+    startAudit(mode === 'single' ? 'single' : (state.config.securityScope === 'list' ? 'list' : 'all'), siteId);
     return;
   }
 
@@ -925,6 +967,275 @@ async function sendFindings(onlyNew) {
   }
 }
 
+// ---------- Privileged-user audit ----------
+
+let auditRowKey = null;
+let sentinelRowKey = null;
+
+function scopeLabel(scope, siteId, siteCount) {
+  return scope === 'single' ? siteLabel(siteId) : scope === 'list' ? `${plural(siteCount, 'site')} from your list` : `all ${plural(siteCount, 'site')}`;
+}
+
+async function startAudit(scope, siteId) {
+  const notify = $('users-notify').checked && !$('users-notify').disabled;
+  try {
+    state.auditing = true;
+    state.summaryPrefix = '';
+    $('btn-cancel').hidden = false;
+    $('progress').hidden = false;
+    setProgress(0, 1, 'Starting…');
+    renderCounts();
+    const { siteCount } = await api.users.audit({ scope, siteId, notify });
+    const body = logTableBody(`${timeNow()} · ${scopeLabel(scope, siteId, siteCount)} · user audit`);
+    auditRowKey = `audit:${Date.now()}`;
+    const tr = addRow(body, auditRowKey, null, { kind: 'audit' });
+    tr.cells[0].textContent = scope === 'single' ? siteLabel(siteId) : scope === 'list' ? 'Your list' : 'All sites';
+    setRow(auditRowKey, { status: 'Working', kind: 'working', details: '' });
+  } catch (err) {
+    state.auditing = false;
+    $('btn-cancel').hidden = true;
+    $('progress').hidden = true;
+    renderCounts();
+    appendNoteRow(logTableBody(`${timeNow()} · Could not start`), err.message);
+  }
+}
+
+function handleAuditEvent(ev) {
+  switch (ev.kind) {
+    case 'started':
+      if (ev.trigger === 'scheduled' && !state.auditing) {
+        state.auditing = true;
+        $('progress').hidden = false;
+        renderCounts();
+        const body = logTableBody(`${timeNow()} · scheduled daily user audit`);
+        auditRowKey = `audit:${ev.auditId}`;
+        const tr = addRow(body, auditRowKey, null, { kind: 'audit' });
+        tr.cells[0].textContent = ev.scope === 'list' ? 'Your list' : 'All sites';
+        setRow(auditRowKey, { status: 'Working', kind: 'working', details: '' });
+      }
+      setProgress(0, ev.total, `Auditing 0 of ${ev.total} sites`);
+      break;
+    case 'site':
+      setProgress(ev.index - 1, ev.total, `Auditing ${ev.index} of ${ev.total} sites · ${ev.siteName}`);
+      break;
+    case 'forensics':
+      $('progress-text').textContent = `Change found on ${ev.siteName} · reading its web server and activity logs…`;
+      break;
+    case 'finished': {
+      state.auditing = false;
+      $('btn-cancel').hidden = !(state.running || state.scanning);
+      const r = ev.result;
+      state.lastAudit = r;
+      const privileged = r.sites.reduce((n, s) => n + s.privileged.length, 0);
+      const baselines = r.sites.filter((s) => s.baseline).length;
+      const parts = [`${plural(privileged, 'privileged account')} on ${plural(r.checked, 'site')}`];
+      if (r.events.length) parts.push(`${plural(r.events.length, 'change')} since last audit`);
+      if (baselines) parts.push(`${plural(baselines, 'baseline')} recorded`);
+      if (r.errors.length) parts.push(`${r.errors.length} could not be read`);
+      if (r.notified && r.notified.ok) parts.push('alert sent');
+      else if (r.notified && !r.notified.ok) parts.push(`alert failed: ${r.notified.error}`);
+      if (r.cancelled) parts.unshift('cancelled');
+      setRow(auditRowKey, {
+        status: r.events.length ? `${r.events.length} changed` : 'No changes',
+        kind: r.events.some((e) => e.kind === 'added' || e.kind === 'changed') ? 'failed' : r.events.length ? 'requested' : 'done',
+        details: parts.join(' · '),
+      });
+      $('progress-fill').style.width = '100%';
+      $('progress-text').textContent = `${r.cancelled ? 'Cancelled' : 'Finished'} · ${parts.join(' · ')}`;
+      renderAdmins(r);
+      renderCounts();
+      break;
+    }
+    case 'error':
+      state.auditing = false;
+      $('btn-cancel').hidden = !(state.running || state.scanning);
+      if (auditRowKey) setRow(auditRowKey, { status: 'Failed', kind: 'failed', details: ev.error });
+      renderCounts();
+      break;
+    default:
+      break;
+  }
+}
+
+function renderAdmins(result) {
+  const panel = $('admins');
+  const list = $('admins-list');
+  if (!result || !result.sites) {
+    panel.hidden = true;
+    return;
+  }
+  const privileged = result.sites.reduce((n, s) => n + s.privileged.length, 0);
+  const when = new Date(result.at).toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' });
+  $('admins-title').textContent = `${plural(privileged, 'privileged account')} across ${plural(result.checked, 'site')}`;
+  const scopeText = result.scope === 'single' ? 'one site' : result.scope === 'list' ? 'your list' : 'all sites';
+  $('admins-meta').textContent = `Watching ${result.watched.join(', ')} · audited ${scopeText} · ${when}${result.events.length ? ` · ${plural(result.events.length, 'change')} highlighted` : ''}`;
+
+  const note = $('admins-note');
+  if (result.errors && result.errors.length) {
+    note.textContent = `Could not read users for: ${result.errors.map((e) => `${e.siteName} (${e.error})`).join('; ')}`;
+    note.hidden = false;
+  } else {
+    note.hidden = true;
+  }
+
+  list.replaceChildren();
+  const sorted = [...result.sites].sort((a, b) => {
+    const ea = a.privileged.some((u) => u.isNew || u.changed) || a.removed.length;
+    const eb = b.privileged.some((u) => u.isNew || u.changed) || b.removed.length;
+    return (eb ? 1 : 0) - (ea ? 1 : 0) || a.siteName.localeCompare(b.siteName);
+  });
+  for (const site of sorted) {
+    const group = document.createElement('div');
+    group.className = 'site-group';
+    const head = document.createElement('div');
+    head.className = 'site-group-head';
+    const h4 = document.createElement('h4');
+    h4.textContent = site.siteName;
+    const meta = document.createElement('span');
+    meta.textContent = `${plural(site.privileged.length, 'privileged account')} of ${plural(site.totalUsers, 'user')}${site.baseline ? ' · baseline recorded' : ''}`;
+    head.append(h4, meta);
+    group.append(head);
+
+    const chips = document.createElement('div');
+    chips.className = 'finding-sites';
+    for (const u of site.privileged) {
+      const chip = document.createElement('span');
+      chip.className = `chip${u.isNew ? ' new' : ''}${u.changed ? ' changed' : ''}`;
+      chip.textContent = `${u.login || 'unknown'}${u.roles.length ? ` · ${u.roles.join(', ')}` : ''}${u.isNew ? ' · new' : ''}${u.changed ? ' · roles changed' : ''}`;
+      chip.title = [u.email, u.registered ? `registered ${u.registered}` : null].filter(Boolean).join(' · ');
+      chips.append(chip);
+    }
+    for (const u of site.removed) {
+      const chip = document.createElement('span');
+      chip.className = 'chip removed';
+      chip.textContent = `${u.login || 'unknown'} · removed`;
+      chips.append(chip);
+    }
+    if (site.privileged.length === 0 && site.removed.length === 0) {
+      const none = document.createElement('span');
+      none.className = 'finding-meta';
+      none.textContent = 'No accounts with a watched role.';
+      chips.append(none);
+    }
+    group.append(chips);
+
+    const siteEvents = (result.events || []).filter((e) => String(e.siteId) === String(site.siteId) && e.forensics);
+    if (siteEvents.length) {
+      const f = siteEvents[0].forensics;
+      const sc = siteEvents[0].sessionCheck;
+      const details = document.createElement('details');
+      const summary = document.createElement('summary');
+      summary.textContent = f.requests.length
+        ? `${plural(f.requests.length, 'request')} to user-management endpoints in the window · ${plural(f.activity.length, 'Pressable action')}`
+        : `No matching requests in the web server log · ${plural(f.activity.length, 'Pressable action')}`;
+      details.append(summary);
+      const ul = document.createElement('ul');
+      const lines = forensicsLinesForUi(f);
+      if (sc && sc.requested) lines.push('Session check sent to the site: it posts to your channel which role-capable users were logged in during the window.');
+      else if (sc && sc.error) lines.push(`Session check could not be started: ${sc.error}`);
+      for (const line of lines) {
+        const li = document.createElement('li');
+        li.textContent = line;
+        ul.append(li);
+      }
+      details.append(ul);
+      group.append(details);
+    }
+    list.append(group);
+  }
+  panel.hidden = false;
+}
+
+// Same content the alert carries, minus the window header line.
+function forensicsLinesForUi(f) {
+  const fmt = (t) => (t ? new Date(t).toLocaleString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', month: 'short', day: 'numeric' }) : 'time unknown');
+  const lines = [];
+  for (const r of f.requests) {
+    lines.push(`${fmt(r.time)} · ${r.method} ${r.path}${r.status ? ` → ${r.status}` : ''} · from ${r.ip || '?'}${r.userAgent ? ` · ${r.userAgent.slice(0, 90)}` : ''} (${r.what})`);
+  }
+  for (const a of f.activity) {
+    lines.push(`${fmt(a.time)} · Pressable: ${a.description || a.name || 'action'}${a.email ? ` by ${a.email}` : ''}${a.ip ? ` from ${a.ip}` : ''}`);
+  }
+  if (!f.requests.length && f.requestsChecked) lines.push('Nothing in the web server log points at wp-admin or the REST API; the change may have come from WP-CLI, a database edit, or fell outside log retention (7 days / 10,000 entries).');
+  if (f.error) lines.push(`Log lookup incomplete: ${f.error}`);
+  return lines;
+}
+
+// ---------- Sentinel ----------
+
+async function refreshSentinelStatus() {
+  const el = $('sentinel-status');
+  if (!state.sites.length) {
+    el.textContent = 'Sentinel: not connected';
+    return;
+  }
+  try {
+    const status = await api.sentinel.status();
+    el.textContent = status.registered
+      ? 'Sentinel: registered as an account-wide mu-plugin'
+      : 'Sentinel: not installed yet';
+    el.title = status.source || '';
+  } catch (err) {
+    el.textContent = `Sentinel: ${err.message}`;
+  }
+}
+
+async function startSentinelInstall() {
+  const scope = state.config.securityScope === 'list' ? 'list' : 'all';
+  try {
+    state.installing = true;
+    $('btn-sentinel').disabled = true;
+    $('progress').hidden = false;
+    setProgress(0, 1, 'Registering the sentinel mu-plugin…');
+    renderCounts();
+    const { siteCount } = await api.sentinel.install({ scope });
+    const body = logTableBody(`${timeNow()} · ${scopeLabel(scope, null, siteCount)} · install sentinel`);
+    sentinelRowKey = `sentinel:${Date.now()}`;
+    const tr = addRow(body, sentinelRowKey, null, { kind: 'sentinel' });
+    tr.cells[0].textContent = scope === 'list' ? 'Your list' : 'All sites';
+    setRow(sentinelRowKey, { status: 'Working', kind: 'working', details: '' });
+  } catch (err) {
+    state.installing = false;
+    $('progress').hidden = true;
+    renderCounts();
+    appendNoteRow(logTableBody(`${timeNow()} · Could not start`), err.message);
+  }
+}
+
+function handleSentinelEvent(ev) {
+  switch (ev.kind) {
+    case 'registered':
+      setProgress(0, 1, `Mu-plugin ${ev.action} · configuring sites…`);
+      break;
+    case 'site':
+      setProgress(ev.index - 1, ev.total, `Configuring ${ev.index} of ${ev.total} sites · ${ev.siteName}`);
+      break;
+    case 'finished': {
+      state.installing = false;
+      const r = ev.result;
+      if (!r.ok) {
+        setRow(sentinelRowKey, { status: 'Failed', kind: 'failed', details: r.error });
+        $('progress-text').textContent = `Failed · ${r.error}`;
+      } else {
+        const ok = r.sites.filter((s) => !s.error).length;
+        const failed = r.sites.filter((s) => s.error);
+        const viaOption = r.sites.filter((s) => s.configured && s.configured.startsWith('option')).length;
+        const parts = [`mu-plugin ${r.registration.action}`, `${ok} of ${r.sites.length} sites configured and tested`];
+        if (viaOption) parts.push(`${viaOption} stored as an option (wp-config not writable)`);
+        if (failed.length) parts.push(`failed: ${failed.map((s) => `${s.siteName} (${s.error})`).join('; ')}`);
+        setRow(sentinelRowKey, { status: failed.length ? `${failed.length} failed` : 'Installed', kind: failed.length ? 'requested' : 'done', details: parts.join(' · ') });
+        $('progress-fill').style.width = '100%';
+        $('progress-text').textContent = `Finished · ${parts.join(' · ')}`;
+      }
+      refreshSentinelStatus();
+      renderCounts();
+      break;
+    }
+    default:
+      break;
+  }
+}
+
 // ---------- Settings ----------
 
 async function refreshCredentialStatus() {
@@ -950,7 +1261,60 @@ function openSettings(message, kind) {
   $('nvd-key').value = state.config.nvdApiKey || '';
   $('alerts-status').textContent = '';
   $('alerts-status').className = 'status';
+  $('user-webhook-url').value = state.config.userWebhookUrl || '';
+  $('watched-roles').value = state.config.watchedRoles || 'administrator';
+  $('users-status').textContent = '';
+  $('users-status').className = 'status';
+  $('audit-every').value = String(state.config.auditEveryHours || 0);
+  $('backup-at').value = state.config.backupListAt || '';
+  $('schedule-status').textContent = '';
+  $('schedule-status').className = 'status';
   if (!$('settings').open) $('settings').showModal();
+}
+
+async function saveSchedule() {
+  const statusEl = $('schedule-status');
+  const backupAt = $('backup-at').value.trim();
+  if (backupAt && !/^\d{2}:\d{2}$/.test(backupAt)) {
+    statusEl.className = 'status bad';
+    statusEl.textContent = 'Use a time like 02:30.';
+    return;
+  }
+  state.config = await api.config.set({ auditEveryHours: Number($('audit-every').value) || 0, backupListAt: backupAt });
+  statusEl.className = 'status ok';
+  statusEl.textContent = 'Saved.';
+}
+
+async function saveUserAlertSettings() {
+  const statusEl = $('users-status');
+  const url = $('user-webhook-url').value.trim();
+  if (url && !/^https:\/\//.test(url)) {
+    statusEl.className = 'status bad';
+    statusEl.textContent = 'The webhook URL needs to start with https://';
+    return;
+  }
+  const roles = $('watched-roles').value.trim() || 'administrator';
+  state.config = await api.config.set({ userWebhookUrl: url, watchedRoles: roles });
+  writeSecurityForm(state.config);
+  statusEl.className = 'status ok';
+  statusEl.textContent = url
+    ? 'Saved. Run "Install sentinel" on the Users tab to push the webhook to your sites.'
+    : 'Saved.';
+}
+
+async function testUserWebhook() {
+  const statusEl = $('users-status');
+  const url = $('user-webhook-url').value.trim();
+  statusEl.className = 'status';
+  statusEl.textContent = 'Sending…';
+  try {
+    const { kind } = await api.security.testWebhook(url);
+    statusEl.className = 'status ok';
+    statusEl.textContent = `Test message delivered to ${kind === 'slack' ? 'Slack' : kind === 'discord' ? 'Discord' : 'your webhook'}.`;
+  } catch (err) {
+    statusEl.className = 'status bad';
+    statusEl.textContent = err.message;
+  }
 }
 
 async function saveAlertSettings() {
@@ -1072,6 +1436,7 @@ function wire() {
   for (const id of ['security-all', 'security-list', 'security-notify']) {
     $(id).addEventListener('change', async () => {
       state.config = await api.config.set(readSecurityForm());
+      writeSecurityForm(state.config);
       renderCounts();
     });
   }
@@ -1082,11 +1447,27 @@ function wire() {
   $('btn-test-webhook').addEventListener('click', testWebhook);
   api.security.onEvent(handleScanEvent);
 
+  for (const id of ['users-all', 'users-list', 'users-notify']) {
+    $(id).addEventListener('change', async () => {
+      state.config = await api.config.set(readUsersForm());
+      writeSecurityForm(state.config);
+      renderCounts();
+    });
+  }
+  $('btn-sentinel').addEventListener('click', startSentinelInstall);
+  $('btn-hide-admins').addEventListener('click', () => { $('admins').hidden = true; });
+  $('btn-save-users').addEventListener('click', saveUserAlertSettings);
+  $('btn-save-schedule').addEventListener('click', saveSchedule);
+  $('btn-test-user-webhook').addEventListener('click', testUserWebhook);
+  api.users.onEvent(handleAuditEvent);
+  api.sentinel.onEvent(handleSentinelEvent);
+
   $('run-list').addEventListener('click', () => startRun('list'));
   $('run-single').addEventListener('click', () => startRun('single'));
   $('btn-cancel').addEventListener('click', async () => {
     $('btn-cancel').disabled = true;
     if (state.scanning) await api.security.cancel();
+    if (state.auditing) await api.users.cancel();
     if (state.running) await api.run.cancel();
     $('progress-text').textContent = 'Cancelling after the current step…';
     $('btn-cancel').disabled = false;
@@ -1136,6 +1517,16 @@ async function init() {
   } catch {
     // No earlier check; nothing to show.
   }
+  try {
+    const lastAudit = await api.users.lastResult();
+    if (lastAudit && lastAudit.sites && lastAudit.sites.length) {
+      state.lastAudit = lastAudit;
+      renderAdmins(lastAudit);
+    }
+  } catch {
+    // No earlier audit.
+  }
+  refreshSentinelStatus();
 }
 
 init().catch((err) => setConn(err.message, 'bad'));

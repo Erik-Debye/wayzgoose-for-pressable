@@ -1,0 +1,53 @@
+# Wayzgoose for Pressable, self-hosted.
+#
+#   cp .env.example .env     # then edit the three required values
+#   docker compose up -d
+#   open https://your-domain
+#
+# Two containers: the app (never exposed directly) and Caddy, which gets a
+# TLS certificate for WAYZGOOSE_DOMAIN automatically and proxies to the app.
+
+services:
+  wayzgoose:
+    build: .
+    image: wayzgoose-for-pressable
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      WAYZGOOSE_TRUST_PROXY: "1"
+    volumes:
+      - wayzgoose-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - internal
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      WAYZGOOSE_DOMAIN: ${WAYZGOOSE_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - internal
+    depends_on:
+      - wayzgoose
+
+volumes:
+  wayzgoose-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  internal:
