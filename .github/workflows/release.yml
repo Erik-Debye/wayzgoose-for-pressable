@@ -28,7 +28,31 @@ permissions:
   contents: write
 
 jobs:
+  # Create the release once, before the builds start. Without this, the
+  # macOS and Windows jobs can both see "no release for this tag yet" and
+  # each create one, leaving two releases with the assets split between them.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Create the GitHub release for this tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; the builds will upload to it."
+          else
+            NOTES="$(git tag -l --format='%(contents)' "$TAG")"
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "${TAG#v}" --notes "${NOTES:-Release $TAG}" --verify-tag
+          fi
+
   build:
+    needs: release
+    # Run after the release job, or straight away for a manual (untagged) run,
+    # where the release job is skipped and the build publishes a draft.
+    if: always() && (needs.release.result == 'success' || needs.release.result == 'skipped')
     strategy:
       fail-fast: false
       matrix:
@@ -101,3 +125,36 @@ jobs:
         run: npx electron-builder ${{ matrix.args }} --publish always $EXTRA_ARGS
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Fail loudly if a release ends up without one of its installers. electron-
+  # builder can lose an upload without failing the job, which is how a
+  # release once shipped with no Windows installer.
+  verify:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the release has every expected file
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          VERSION="${TAG#v}"
+          ASSETS="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          echo "$ASSETS"
+          MISSING=""
+          for f in \
+            "Wayzgoose-for-Pressable-$VERSION-Setup.exe" \
+            "Wayzgoose-for-Pressable-$VERSION-arm64.dmg" \
+            "Wayzgoose-for-Pressable-$VERSION-x64.dmg" \
+            "Wayzgoose-for-Pressable-$VERSION-arm64.zip" \
+            "Wayzgoose-for-Pressable-$VERSION-x64.zip" \
+            "latest.yml" \
+            "latest-mac.yml"; do
+            echo "$ASSETS" | grep -qx "$f" || MISSING="$MISSING $f"
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::Release $TAG is missing:$MISSING"
+            exit 1
+          fi
+          echo "All expected files are attached to $TAG."
